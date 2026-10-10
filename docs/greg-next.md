@@ -1,4 +1,4 @@
-# Engine: what changed and what's next (main 59f0b40)
+# Engine: what changed and what's next (main 59f0b40, updated for c183b9b)
 
 From Kartik's audit of main on 2026-10-10. Paths are relative to `backend/`. Run `pytest -q` from `backend/` after each change. Main is green: 347 passed, 1 xfailed.
 
@@ -32,32 +32,13 @@ The same commit pinned `trust_stub` in two of your `test_engine` tests that asse
 
 ## What's left, in priority order
 
-### 1. Fill `/state.metrics` from Chris's functions (Matthew's comparison tab is empty)
+### 1. Metrics: done (your 1f2e151)
 
-Paste this into your agent:
-
-> In `backend/agnt911/engine/runtime.py`, wire Chris's metrics into the engine. Add `from .. import trust` at the top; use the real module directly, not `protocol.trust`, because two tests pin `protocol.trust` to the stub.
->
-> 1. **`_new_run`:** add `self._incident_times, self._tick_records = {}, []`, `self._checks_this_tick = 0` and `self._escalated_this_tick = False`.
-> 2. **`run_round`, the commit block:** after the loop that appends to `self.checks`, add `self._checks_this_tick += len(checks)`. Where it sets `self.escalation`, also set `self._escalated_this_tick = self._escalated_this_tick or bool(escalated)`.
-> 3. **`step()`:** after `self._apply_events()`, add:
->    ```python
->    self._incident_times = trust.track_incidents(self._incident_times, self.world)
->    self._tick_records.append(trust.tick_record(self.world, self._incident_times,
->        "baseline" if self.world.baseline else "protected", self._checks_this_tick, self._escalated_this_tick))
->    self._checks_this_tick, self._escalated_this_tick = 0, False
->    self.metrics = trust.metrics(self._tick_records, self._incident_times)
->    ```
->    `step()` returns early while an escalation is pending. That's why the escalation flag is carried until the first step after the human resolves it.
-> 4. **`_state()`:** add `tick_records=list(self._tick_records)` so Matthew can chart checks per tick and trust per vehicle.
-> 5. **Tests:** in `tests/test_engine.py::test_incident_negotiation_dispatch_movement_and_api_end_to_end`, change `assert not state["integration"]["metrics_available"]` to `assert state["integration"]["metrics_available"]`. Add a test that steps the demo to tick 41 with the fake LLM and asserts:
->    - `state["metrics"]["incidents_served"] >= 1`,
->    - `len(state["tick_records"]) == 41`,
->    - `state["metrics"]["checks_total"] > 0`.
->
-> Note: `set_mode` already copies `self.metrics` into `comparison`, so the baseline and protected runs line up once this lands.
+`/state.metrics` and `/state.tick_records` are filled now. kartik-7e's end-to-end run on c183b9b found two follow-ups, which are items 5 and 6.
 
 ### 2. Checks in the shape Matthew asked for: done another way, nothing to build
+
+Since c183b9b, `/state.check_events` exists again. It is derived from the typed stream (`events.check_events`) and has pass/fail with `trust_before` and `trust_after`.
 
 Superseded by the typed event stream ("events: typed stream for frontend animations"). `/state.events` now carries `claim_verified` (`claim_id`, `verifier`, `result`, `claim_type`) and `trust_changed` (`old`, `new`, `reason`) for every check, emitted at verification time and merged when the round commits. If Matthew wants pass/fail wording, map it on the client: `confirmed` is pass, `contradicted` is fail, `unverifiable` is inconclusive (the same mapping as `trust.feed_result`). See docs/events.md. Don't add `check_events`.
 
@@ -72,6 +53,18 @@ At 12 m/s, P1 (dispatched to I3 at tick 5) and F1 (sent to I2 at tick 0) were st
 ### 4. Check the human popup live
 
 No escalation fired in my two live runs, which stopped at tick 80. Since ea14803 the scenario has an escalation beat at tick 140: two severity-5 medical calls (I6, I7) 600 m apart, with A2 the only trusted free ambulance. `scripts/check_scenario.py` asserts `escalated_to_human` fires there. Run it once against the real API and confirm in the UI that `/state.paused` goes true and `/resolve` resumes the clock.
+
+### 5. `first_untrusted_tick` is one tick late
+
+In kartik-7e's real run, the `trust_changed` events that made vehicles untrusted came at ticks 100 and 140, but `metrics.first_untrusted_tick` says 101 and 141. The cause is in `Engine.step()`: the `trust.tick_record(...)` block runs after `tick(self.world, dt_s)` has already advanced `world.tick`, so a round's trust changes and checks get filed under the next tick. Paste:
+
+> In `backend/agnt911/engine/runtime.py`, `Engine.step()`: build the tick record before calling `tick(self.world, dt_s)`, so that record T describes tick T after its round. Move the `track_incidents` + `tick_record` + append + reset + `metrics` + `_log("tick_record")` lines to just after the `dt_s = ...` line. Keep the `track_incidents` call before service completion, because it captures arrivals before responders are released. Test: with a fake LLM that makes A2 lie at tick 5, assert `metrics["first_untrusted_tick"]["A2"]` equals the tick of A2's `trust_changed` event that sets `untrusted`.
+
+### 6. `comparison` only files a run when the mode switches
+
+`set_mode` appends the finished run to `comparison`, but the run in progress lives only in `metrics`. Matthew has to pair `metrics` (now) with `comparison` (earlier runs). Either tell Matthew that, or paste:
+
+> In `backend/agnt911/engine/runtime.py`, `_state()`: add `current={"run_id": self.run_id, "baseline": self.world.baseline, "metrics": self.metrics}` next to `comparison`, so the frontend reads the same record shape for the live run as for finished ones.
 
 ## Also changed in your files since the audit (kartik-7e, ea14803)
 
