@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 from ..agents import haversine_m
-from ..feed import validate_preset
+from ..feed import preset_kind, validate_preset
 from ..models import Incident, Location, Vehicle, World
 from ..protocol import ROLES, required_roles
 
@@ -32,9 +32,9 @@ def load_scenario(path: str | Path = DEFAULT_SCENARIO) -> dict:
                 raise ValueError("Scenario calls must be new and open")
             incident_ids.add(incident.id)
         elif event["type"] == "inject":
-            if event["vehicle"] not in {v.id for v in vehicles}:
+            preset = resolve_injection(scenario, event.get("preset_id"), event.get("text"))
+            if preset_kind(preset) != "fake_call" and event.get("vehicle") not in {v.id for v in vehicles}:
                 raise ValueError("Injection names an unknown vehicle")
-            resolve_injection(scenario, event.get("preset_id"), event.get("text"))
         elif event["type"] == "escalate":
             if event["incident"] not in incident_ids:
                 raise ValueError("Escalation precedes its incident")
@@ -66,7 +66,7 @@ def resolve_injection(scenario: dict | None, preset_id: str | None = None, text:
             raise ValueError(f"Unknown preset {preset_id!r}")
         preset = deepcopy(presets[preset_id])
     else:
-        preset = {"type": "raw", "text": text}
+        preset = {"kind": "raw", "text": text}
     validate_preset(preset)
     return preset
 

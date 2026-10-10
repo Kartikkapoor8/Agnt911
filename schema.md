@@ -49,6 +49,9 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | location | Location | |
 | status | `"open"` \| `"assigned"` \| `"resolved"` | default `"open"` |
 | assigned | list of vehicle ids | default empty |
+| source | `"911"` \| `"operator"` | default `"911"`; `"operator"` for a call placed by an outside caller (fake_call preset) |
+| source_id | string or null | the outside caller's id, e.g. `"caller-1"` |
+| false_report | bool | default false; set when the first police car on scene finds nothing (the incident is then `resolved`) |
 
 ## Message
 `World.recent_messages` holds three kinds of message, told apart by `kind`: a `Claim` (one vehicle telling the fleet something), a `Bid`, or a `Vote`. Each carries `round` (1 propose, 2 counter, 3 vote) so the feed can group them. The message bus adds `sig` (HMAC); agents and the protocol leave it `""`. The protocol overwrites `id`, `tick` and `vehicle` on every claim with the real sender, so a vehicle cannot speak as another. Every message also carries `compromised` (default `false`), set `true` by the protocol when the sender is hacked; it is for the frontend and logs and is stripped from every vehicle's prompt.
@@ -241,14 +244,15 @@ Baseline: `vote_weight` returns 1.0 for everyone and `should_verify` returns fal
 ## POST /inject body
 Exactly one of:
 - `{"vehicle_id": "A2", "preset_id": "on_scene_resolved"}`: a preset from `scenarios/demo.json`.
-- `{"vehicle_id": "A2", "text": "free text"}`: stored as `{"type": "raw", "text": ...}`.
+- `{"vehicle_id": "A2", "text": "free text"}`: stored as `{"kind": "raw", "text": ...}`.
+- `{"preset_id": "fake_call"}`: no vehicle; places a fake call (below).
 
-Returns `{"accepted": true, "vehicle_id": "A2"}`. Unknown vehicle: 404. Unknown preset, blank text, both or neither: 422.
+Returns `{"accepted": true, "vehicle_id": ...}`. Unknown vehicle: 404. Unknown preset, blank text, both or neither, or a vehicle preset without `vehicle_id`: 422.
 
 ## Injection (corrupted sensor feed)
-A hacked vehicle keeps its system prompt and model. `feed.corrupt_view(view, preset, world)` (pure code) rewrites what it perceives before its user message is built, so an honest model reports false data honestly. A preset is `{"type": ...}` plus `"text"` for raw.
+A hacked vehicle keeps its system prompt and model. `feed.corrupt_view(view, preset, world)` (pure code) rewrites what it perceives before its user message is built, so an honest model reports false data honestly. A preset is `{"kind": ...}` plus `"text"` for raw (`"type"` is still read as the kind in older presets).
 
-| Preset `type` | What the hacked vehicle sees |
+| Preset `kind` | What the hacked vehicle sees |
 |---|---|
 | `on_scene_resolved` | Itself at the nearest unresolved incident: own location moved there, own status `on_scene`, that incident `resolved` at distance 0 |
 | `sector_clear` | No incidents within 500 m; those incidents appear `resolved` in the broadcast call list |
@@ -256,4 +260,11 @@ A hacked vehicle keeps its system prompt and model. `feed.corrupt_view(view, pre
 | `refuse_all` | Own status `unavailable`; incidents unchanged |
 | `raw` | The free text under a `sensor_note` field |
 
-Scenario presets are `{"id", "label", "preset": {"type": ...}}`. Scenario inject events are `{"tick", "type": "inject", "vehicle", "preset_id"}` (or `"text"` for raw).
+Scenario presets are `{"id", "label", "preset": {"kind": ...}}`. Scenario inject events are `{"tick", "type": "inject", "vehicle", "preset_id"}` (or `"text"` for raw; no `"vehicle"` for fake_call).
+
+Bids are checked too: the protocol hands each bid to `trust.check_claim` as an `observation` of that incident carrying `eta_seconds`, sent from the bidder's real position. An ETA no vehicle could drive (below distance / 30 m/s, with 200 m slack) is contradicted, lowers trust, and that bid is left out of the vote. Bid checks appear as `claim_verified` events with `subject: "bid"`; they are not in `plan.checks`, which must match signed claim messages.
+
+When a renegotiation leaves a role with nobody (no options, no winner, no escalation), the trusted vehicle already en route to or on scene at that incident keeps the role (`plan.evidence.kept: {role: vehicle id}`), so a re-run never silently drops it.
+
+## Fake calls and callers
+The `fake_call` preset is `{"kind": "fake_call", "type": incident type, "severity": 1-5, "location": Location, "source_id": "caller-1"}`. It adds an incident `X1`, `X2`, … with `source: "operator"` and that `source_id`, and registers the caller in `World.callers` at credibility 1.0. Nothing is really there; only the engine knows. When the first police car arrives, the incident gets `false_report: true` and is resolved (responders released), the event `incident_discredited` fires, and `World.callers[source_id]` drops by 0.3 (floor 0). `World.callers: {source_id: float}` is part of `/state`.

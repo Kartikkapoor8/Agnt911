@@ -12,7 +12,9 @@ import uuid
 
 from .. import llm, protocol
 from ..agents import LLMFn
+from ..callers import create_fake_call, discredit
 from ..events import STATE_EVENT_LIMIT, emit
+from ..feed import preset_kind
 from ..fake_llm import fake_llm, split_user_message
 from ..models import Event, Incident, Plan, World
 from .bus import MessageBus, SignedHistory
@@ -79,6 +81,7 @@ class Engine:
         self._pending = {iid for iid, i in self.world.incidents.items() if i.status == "open"}
         self._scheduled = sorted(deepcopy(self.scenario["events"]), key=lambda e: e["tick"]) if self.scenario else []
         self._event_cursor = 0
+        self._fake_calls: set[str] = set()  # ground truth: incidents with nothing there; vehicles never see it
         self._log("run_started", seed=self.seed, baseline=baseline)
         for incident in self.world.incidents.values():
             self._record_created(incident)
@@ -107,15 +110,35 @@ class Engine:
         self._emit("call_received", incident=incident.id, incident_type=incident.type,
                    severity=incident.severity, label=label)
 
-    def _inject(self, vid: str, preset: dict) -> None:
+    def _inject(self, vid: str | None, preset: dict) -> None:
         validate_injection(preset)
+        if preset_kind(preset) == "fake_call":  # an outside caller, not a vehicle: add the call
+            incident = create_fake_call(self.world, preset)
+            self._fake_calls.add(incident.id)
+            self._pending.add(incident.id)
+            self._revision += 1
+            self._log("fake_call", incident=incident.id, source_id=incident.source_id)
+            self._record_created(incident, f"{incident.type.capitalize()} reported by {incident.source_id}")
+            return
+        if vid is None:
+            raise ValueError("vehicle_id is required for this preset")
         if vid not in self.world.vehicles:
             raise KeyError(vid)
         self.world.injections[vid] = preset
         self._revision += 1
         self._pending.update(i.id for i in self.world.incidents.values() if i.status != "resolved")
         self._log("vehicle_hacked", vehicle_id=vid)
-        self._emit("vehicle_compromised", vehicle=vid, preset=preset["type"])
+        self._emit("vehicle_compromised", vehicle=vid, preset=preset_kind(preset))
+
+    def _verify_call_on_arrival(self, vid: str) -> None:
+        """The first police car at a fake call finds nothing: discredit the call and release its responders."""
+        vehicle = self.world.vehicles[vid]
+        iid = vehicle.target_incident
+        if vehicle.type == "police" and iid in self._fake_calls and not self.world.incidents[iid].false_report:
+            self._log_event(discredit(self.world, iid, vid))
+            self._log("incident_discredited", incident=iid, verifier=vid,
+                      source_id=self.world.incidents[iid].source_id)
+            self._resolve_locked(iid)
 
     def _apply_events(self) -> None:
         while self._event_cursor < len(self._scheduled):
@@ -130,7 +153,7 @@ class Engine:
                 self._revision += 1
                 self._record_created(incident, event["incident"].get("label"))
             elif event["type"] == "inject":
-                self._inject(event["vehicle"],
+                self._inject(event.get("vehicle"),
                              resolve_injection(self.scenario, event.get("preset_id"), event.get("text")))
             else:
                 iid = event["incident"]
@@ -170,8 +193,8 @@ class Engine:
         async with self._lock:
             return self._state()
 
-    async def inject(self, vehicle_id: str, text: str | None = None, *, preset_id: str | None = None) -> None:
-        """Hack a vehicle: corrupt its sensor feed with a scenario preset, or with free text as a raw sensor note."""
+    async def inject(self, vehicle_id: str | None, text: str | None = None, *, preset_id: str | None = None) -> None:
+        """Hack a vehicle (corrupt its feed with a preset, or free text as a raw note), or place a fake_call (no vehicle)."""
         preset = resolve_injection(self.scenario, preset_id, text)
         async with self._lock:
             self._inject(vehicle_id, preset)
@@ -355,6 +378,7 @@ class Engine:
             for vid in arrivals:
                 self._log("vehicle_arrived", vehicle_id=vid, incident=self.world.vehicles[vid].target_incident)
                 self._emit("vehicle_arrived", vehicle=vid, incident=self.world.vehicles[vid].target_incident)
+                self._verify_call_on_arrival(vid)
             self._refresh_coverage()
             for iid, incident in self.world.incidents.items():
                 covered_at = self.timing[iid]["covered_at_s"]

@@ -1,29 +1,30 @@
 {
   "seed": 911,
-  "map_center": {"lat": 37.3352, "lng": -121.8811},
+  "map_center": {"lat": 37.3352, "lng": -121.8881},
   "vehicles": [
-    {"id": "A1", "type": "ambulance", "home_district": "Downtown", "location": {"lat": 37.3352, "lng": -121.8881}},
-    {"id": "A2", "type": "ambulance", "home_district": "Diridon", "location": {"lat": 37.3297, "lng": -121.9017}},
-    {"id": "A3", "type": "ambulance", "home_district": "Japantown", "location": {"lat": 37.3480, "lng": -121.8940}},
-    {"id": "F1", "type": "fire", "home_district": "Downtown", "location": {"lat": 37.3376, "lng": -121.8895}},
-    {"id": "F2", "type": "fire", "home_district": "Diridon", "location": {"lat": 37.3305, "lng": -121.9120}},
-    {"id": "P1", "type": "police", "home_district": "Downtown", "location": {"lat": 37.3367, "lng": -121.8903}},
-    {"id": "P2", "type": "police", "home_district": "Japantown", "location": {"lat": 37.3490, "lng": -121.8920}}
+    {"id": "A1", "type": "ambulance", "home_district": "Downtown", "location": {"lat": 37.33475, "lng": -121.88528}},
+    {"id": "A2", "type": "ambulance", "home_district": "SoFA", "location": {"lat": 37.32979, "lng": -121.88923}},
+    {"id": "A3", "type": "ambulance", "home_district": "Market North", "location": {"lat": 37.34015, "lng": -121.89431}},
+    {"id": "F1", "type": "fire", "home_district": "Downtown", "location": {"lat": 37.33745, "lng": -121.88471}},
+    {"id": "F2", "type": "fire", "home_district": "SoFA", "location": {"lat": 37.33115, "lng": -121.88697}},
+    {"id": "P1", "type": "police", "home_district": "Downtown", "location": {"lat": 37.3352, "lng": -121.89036}},
+    {"id": "P2", "type": "police", "home_district": "Market North", "location": {"lat": 37.33925, "lng": -121.89375}}
   ],
   "events": [
-    {"tick": 0, "type": "incident", "incident": {"id": "I1", "type": "medical", "severity": 5, "location": {"lat": 37.3355, "lng": -121.8860}, "label": "Cardiac arrest, 1st & Santa Clara"}},
-    {"tick": 0, "type": "incident", "incident": {"id": "I2", "type": "fire", "severity": 3, "location": {"lat": 37.3487, "lng": -121.8940}, "label": "Structure fire, Japantown near N 5th & Jackson"}},
-    {"tick": 5, "type": "incident", "incident": {"id": "I3", "type": "crash", "severity": 3, "location": {"lat": 37.3322, "lng": -121.9015}, "label": "Two-car crash near Diridon Station"}},
-    {"tick": 20, "type": "incident", "incident": {"id": "I4", "type": "hazard", "severity": 2, "location": {"lat": 37.3250, "lng": -121.8780}, "label": "Gas smell, S 1st & Reed"}},
+    {"tick": 0, "type": "incident", "incident": {"id": "I1", "type": "medical", "severity": 5, "location": {"lat": 37.3361, "lng": -121.88528}, "label": "Cardiac arrest, 2nd & Santa Clara"}},
+    {"tick": 0, "type": "incident", "incident": {"id": "I2", "type": "fire", "severity": 3, "location": {"lat": 37.33925, "lng": -121.88245}, "label": "Structure fire near St James Park"}},
+    {"tick": 5, "type": "incident", "incident": {"id": "I3", "type": "crash", "severity": 3, "location": {"lat": 37.33385, "lng": -121.89318}, "label": "Two-car crash, Almaden & San Fernando"}},
+    {"tick": 20, "type": "incident", "incident": {"id": "I4", "type": "hazard", "severity": 2, "location": {"lat": 37.3325, "lng": -121.88641}, "label": "Gas smell, 1st & San Carlos"}},
     {"tick": 40, "type": "escalate", "incident": "I3", "severity": 5, "label": "Crash now multi-vehicle pileup"},
-    {"tick": 60, "type": "inject", "vehicle": "A2", "preset_id": "on_scene_resolved"},
-    {"tick": 120, "type": "inject", "vehicle": "F2", "preset_id": "sector_clear"},
-    {"tick": 150, "type": "incident", "incident": {"id": "I5", "type": "medical", "severity": 5, "location": {"lat": 37.3340, "lng": -121.8590}, "label": "Unresponsive person, east of downtown near Story Rd"}}
+    {"tick": 60, "type": "inject", "vehicle": "A1", "preset_id": "on_scene_resolved"},
+    {"tick": 100, "type": "incident", "incident": {"id": "I5", "type": "medical", "severity": 4, "location": {"lat": 37.33025, "lng": -121.88245}, "label": "Unresponsive person, 4th & San Salvador"}},
+    {"tick": 120, "type": "inject", "vehicle": "A3", "preset_id": "closer_than_you_are"}
   ],
   "presets": [
-    {"id": "on_scene_resolved", "label": "Report on scene and resolved", "preset": {"type": "on_scene_resolved"}},
-    {"id": "sector_clear", "label": "Claim your sector is clear", "preset": {"type": "sector_clear"}},
-    {"id": "closer_than_you_are", "label": "Claim you are 200 m from the nearest incident", "preset": {"type": "closer_than_you_are"}},
-    {"id": "refuse_all", "label": "Refuse every assignment", "preset": {"type": "refuse_all"}}
+    {"id": "on_scene_resolved", "label": "Report on scene and resolved", "preset": {"kind": "on_scene_resolved"}},
+    {"id": "sector_clear", "label": "Claim your sector is clear", "preset": {"kind": "sector_clear"}},
+    {"id": "closer_than_you_are", "label": "Claim you are 200 m from the nearest incident", "preset": {"kind": "closer_than_you_are"}},
+    {"id": "refuse_all", "label": "Refuse every assignment", "preset": {"kind": "refuse_all"}},
+    {"id": "fake_call", "label": "Place a fake shooting call", "preset": {"kind": "fake_call", "type": "shooting", "severity": 4, "location": {"lat": 37.33835, "lng": -121.8881}, "source_id": "caller-1"}}
   ]
 }

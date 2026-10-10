@@ -41,7 +41,7 @@ def kinds(messages, kind):
 
 def test_on_scene_resolved_puts_a2_on_the_nearest_call_and_shows_it_handled():
     """A2 believes it stands at I3 (169 m away), which looks resolved: it reports so and does not bid on it."""
-    world, a2, users = negotiate({"type": "on_scene_resolved"})
+    world, a2, users = negotiate({"kind": "on_scene_resolved"})
     claims = {(c.type, c.incident) for c in kinds(a2, "claim")}
     assert {("on_scene", "I3"), ("resolved", "I3")} <= claims
     assert all(c.location == world.incidents["I3"].location for c in kinds(a2, "claim") if c.incident == "I3")
@@ -52,7 +52,7 @@ def test_on_scene_resolved_puts_a2_on_the_nearest_call_and_shows_it_handled():
 
 def test_sector_clear_hides_nearby_calls_and_shows_them_resolved():
     """A2 sees nothing within 500 m and I3 broadcast as resolved: it claims sector_clear and skips I3."""
-    _world, a2, users = negotiate({"type": "sector_clear"})
+    _world, a2, users = negotiate({"kind": "sector_clear"})
     assert "sector_clear" in {c.type for c in kinds(a2, "claim")}
     assert "I3" not in {b.incident for b in kinds(a2, "bid")}
     assert split_user_message(users["A2"])[0]["nearby_incidents"] == []
@@ -61,7 +61,7 @@ def test_sector_clear_hides_nearby_calls_and_shows_them_resolved():
 
 def test_closer_than_you_are_makes_every_call_200_m_and_30_s():
     """Every incident A2 sees is 200 m away with a 30 s ETA, so every bid it makes says 30 s."""
-    _world, a2, users = negotiate({"type": "closer_than_you_are"})
+    _world, a2, users = negotiate({"kind": "closer_than_you_are"})
     bids = kinds(a2, "bid")
     assert bids and {b.eta_seconds for b in bids} == {30}
     assert "200 m from you, ETA 30 s" in users["A2"] and "ETA 30 s" not in users["A1"]
@@ -69,7 +69,7 @@ def test_closer_than_you_are_makes_every_call_200_m_and_30_s():
 
 def test_refuse_all_marks_a2_unavailable():
     """A2 reads its own status as unavailable: it says so and bids on nothing."""
-    world, a2, users = negotiate({"type": "refuse_all"})
+    world, a2, users = negotiate({"kind": "refuse_all"})
     assert not kinds(a2, "bid")
     assert [(c.type, c.value) for c in kinds(a2, "claim")] == [("available", {"available": False})]
     assert split_user_message(users["A2"])[0]["you"]["status"] == "unavailable"
@@ -78,7 +78,7 @@ def test_refuse_all_marks_a2_unavailable():
 
 def test_raw_text_arrives_as_a_sensor_note_only_for_a2():
     """Free text lands in A2's view under sensor_note and in nobody else's."""
-    _world, a2, users = negotiate({"type": "raw", "text": "Gas main rupture reported at your location."})
+    _world, a2, users = negotiate({"kind": "raw", "text": "Gas main rupture reported at your location."})
     assert split_user_message(users["A2"])[0]["sensor_note"] == "Gas main rupture reported at your location."
     assert all("Gas main rupture" not in u for vid, u in users.items() if vid != "A2")
     assert any(c.type == "observation" and c.value == {"sensor_note": True} for c in kinds(a2, "claim"))
@@ -89,8 +89,8 @@ def test_corrupt_view_is_pure_and_rejects_unknown_presets():
     world = build_fake_world()
     view = VehicleAgent("A2").sensor_view(world, list(world.incidents.values()))
     before = copy.deepcopy(view)
-    corrupt_view(view, {"type": "on_scene_resolved"}, world)
+    corrupt_view(view, {"kind": "on_scene_resolved"}, world)
     assert view == before
-    for bad in ({"type": "lie"}, {"type": "raw"}, {"type": "raw", "text": "  "}, "on_scene_resolved"):
+    for bad in ({"kind": "lie"}, {"kind": "raw"}, {"kind": "raw", "text": "  "}, "on_scene_resolved"):
         with pytest.raises(ValueError):
             validate_preset(bad)

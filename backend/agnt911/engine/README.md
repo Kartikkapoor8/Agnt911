@@ -97,10 +97,11 @@ previous timing/metric summaries in `comparison`.
   scenario. `add_incident()` and `update_incident()` accept a string `label`
   without changing the shared Incident model. Injection text and signing keys
   are omitted.
-- `POST /inject`: `{"vehicle_id":"A2","preset_id":"on_scene_resolved"}` or
-  `{"vehicle_id":"A2","text":"free text"}` (a raw sensor note). Returns
-  `{"accepted":true,"vehicle_id":"A2"}`. Unknown ID: 404; unknown preset, invalid
-  text, both or neither: 422.
+- `POST /inject`: `{"vehicle_id":"A2","preset_id":"on_scene_resolved"}`,
+  `{"vehicle_id":"A2","text":"free text"}` (a raw sensor note), or
+  `{"preset_id":"fake_call"}` (no vehicle: places a fake call from caller-1). Returns
+  `{"accepted":true,"vehicle_id":...}`. Unknown ID: 404; unknown preset, invalid
+  text, both or neither, or a vehicle preset without vehicle_id: 422.
 - `POST /mode`: `{"mode":"baseline"}` or `{"mode":"protected"}`. Returns the
   new state; this starts a new run even if the mode is unchanged.
 - `POST /resolve`: `{"assignments":{"A1":"I1"}}`, with optional null targets

@@ -86,15 +86,9 @@ Kartik's list includes telling vehicles in `prompts/shared.md` to use `value: {"
 >
 > Test: an observation with `value={"I3_status_in_my_state": "resolved"}` from a vehicle at I3 is always verified, and it is contradicted once item 1 lands. That value is the exact one A2 sent live.
 
-### 3. Check bids, not just claims
+### 3. Check bids, not just claims: done another way, nothing to build
 
-The `closer_than_you_are` preset makes a hacked vehicle bid ETA 30 s from about 1.5 km away; kartik-7e's probe saw this live. Only claims reach trust today. Paste:
-
-> In `backend/agnt911/trust.py`, add `check_bid(bid: Bid, world: World) -> str`:
-> - Contradicted if `bid.eta_seconds * MAX_SPEED_MPS < distance(sender, incident) - 200`. This is the same rule `_numbers_lie` applies to `eta_seconds` on claims.
-> - Unverifiable if the sender or incident is unknown, or if `witness` finds nobody, the same as for claims. Otherwise confirmed.
->
-> Add `"check_bid": ["bid", "world"]` to `tests/test_contracts.py` and write the signature in schema.md under "Kartik -> Chris". Tell Kartik: `protocol._verify` will call it on each round's bids and feed the result to `update_trust`.
+Superseded (commit "scenario: tight map, catchable hijacks, fake-call preset, callers"). The protocol now hands every bid to your existing `check_claim` as an `observation` of that incident with `value: {"eta_seconds": ...}`, sent from the bidder's real position. Your `_numbers_lie` ETA rule and `witness` judge it, `update_trust` applies the result, and a contradicted bid is left out of the vote. Don't add `check_bid`. If you change the ETA rule, the closer_than_you_are hijack in the demo depends on it: A3 bids 30 s on I5 from 1,520 m with P2 112 m away.
 
 ### 4. Spot checks should vary by tick
 

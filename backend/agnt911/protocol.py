@@ -128,6 +128,7 @@ async def run_round(
         options = _all_options(world, bids, incidents)
         return _resolve_all(world, incidents, bids, options, {}, claims, [])
     checks = _verify(world, claims, PROPOSE)
+    disproven = _verify_bids(world, list(bids.values()), PROPOSE)
 
     # Round 2: COUNTER
     jobs = [(agents[vid], COUNTER_TASK, vid) for vid in agents]
@@ -143,10 +144,13 @@ async def run_round(
         bids = {key: b for key, b in bids.items() if key[0] != vid}
     bids.update(counter_bids)
     checks += _verify(world, counter_claims, COUNTER)
+    # A bid restated in round 2 is judged by its round-2 check; untouched round-1 bids keep theirs.
+    disproven = (disproven - set(counter_bids)) | _verify_bids(world, list(counter_bids.values()), COUNTER)
     claims += counter_claims
 
-    # Round 3: VOTE, one call per required role per incident per vehicle, all in one gather
-    options = _all_options(world, bids, incidents)
+    # Round 3: VOTE, one call per required role per incident per vehicle, all in one gather.
+    # A bid the trust module contradicted is not put to the vote.
+    options = _all_options(world, {k: b for k, b in bids.items() if k not in disproven}, incidents)
     jobs = [
         (agents[vid], _vote_task(world, world.incidents[slot[0]], slot[1], opts), slot)
         for slot, opts in options.items() if opts
@@ -247,6 +251,38 @@ def _verify(world: World, claims: list[Claim], round_no: int) -> list[dict]:
     return checks
 
 
+def _bid_as_claim(world: World, bid: Bid) -> Claim:
+    """Present a bid to the trust module as what it asserts: an observation of that incident, with its ETA."""
+    return Claim(id=f"{bid.vehicle}-r{bid.round}-bid-{bid.incident}", tick=world.tick, vehicle=bid.vehicle,
+                 type="observation", incident=bid.incident, location=world.vehicles[bid.vehicle].location,
+                 value={"eta_seconds": bid.eta_seconds}, confidence=bid.confidence, reasoning=bid.reasoning,
+                 round=bid.round, compromised=bid.compromised)
+
+
+def _verify_bids(world: World, bids: list[Bid], round_no: int) -> set[tuple[str, str]]:
+    """Check every bid's ETA with the trust module (an ETA faster than any vehicle can drive is a lie).
+
+    Returns the (vehicle, incident) keys of contradicted bids. Results go to trust and the event stream
+    only: plan.checks must match signed claims in the log, and a bid is not a claim message.
+    """
+    disproven = set()
+    for bid in bids:
+        sender = world.vehicles.get(bid.vehicle)
+        claim = _bid_as_claim(world, bid)
+        if sender is None or not trust.should_verify(claim, sender, round_no):
+            continue
+        result = trust.check_claim(claim, world)
+        updated = trust.update_trust(sender, result)
+        if isinstance(updated, Vehicle):
+            world.vehicles[sender.id] = updated
+        check = {"claim_id": claim.id, "verifier": _verifier(world, claim), "result": result}
+        _emit_check(world, claim, check, before=sender, after=world.vehicles[sender.id],
+                    subject="bid", eta_seconds=bid.eta_seconds)
+        if result == "contradicted":
+            disproven.add((bid.vehicle, bid.incident))
+    return disproven
+
+
 def _emit_bid(world: World, bid: Bid, revised: bool) -> None:
     """Emit bid_placed for a new bid (round 1) or a changed one (round 2)."""
     emit(world, "bid_placed", vehicle=bid.vehicle, incident=bid.incident, round=bid.round, revised=revised,
@@ -254,13 +290,14 @@ def _emit_bid(world: World, bid: Bid, revised: bool) -> None:
          cost_to_district=bid.cost_to_district)
 
 
-def _emit_check(world: World, claim: Claim, check: dict, before: Vehicle, after: Vehicle) -> None:
+def _emit_check(world: World, claim: Claim, check: dict, before: Vehicle, after: Vehicle,
+                subject: str = "claim", **extra) -> None:
     """Emit claim_verified, then trust_changed and any untrusted flip that the check caused."""
     emit(world, "claim_verified", vehicle=claim.vehicle, incident=claim.incident, claim_id=check["claim_id"],
-         verifier=check["verifier"], result=check["result"], claim_type=claim.type)
+         verifier=check["verifier"], result=check["result"], claim_type=claim.type, subject=subject, **extra)
     if after.trust != before.trust:
         emit(world, "trust_changed", vehicle=claim.vehicle, incident=claim.incident, old=before.trust,
-             new=after.trust, reason=f"{check['result']} {claim.type} claim {check['claim_id']}")
+             new=after.trust, reason=f"{check['result']} {subject} {check['claim_id']}")
     if after.untrusted and not before.untrusted:
         emit(world, "vehicle_untrusted", vehicle=claim.vehicle, trust=after.trust)
     elif before.untrusted and not after.untrusted:
@@ -383,7 +420,8 @@ def _emit_plan(world: World, plan: Plan) -> None:
     kind = "plan_committed" if plan.consensus or world.baseline else "plan_no_consensus"
     emit(world, kind, incident=plan.incident, assigned=plan.assigned, tally=plan.tally,
          round_reached=plan.round_reached, baseline=world.baseline,
-         fallback=(plan.evidence or {}).get("fallback"), believed=bool((plan.evidence or {}).get("believed")))
+         fallback=(plan.evidence or {}).get("fallback"), believed=bool((plan.evidence or {}).get("believed")),
+         kept=(plan.evidence or {}).get("kept"))
 
 
 def _resolve(
@@ -411,7 +449,7 @@ def _resolve(
             assigned = [report.vehicle] if report.type == "on_scene" else []
             return plan.model_copy(update={"assigned": assigned, "evidence": {"believed": report.model_dump()}})
 
-    assigned, role_consensus, escalations = [], [], []
+    assigned, role_consensus, escalations, kept = [], [], [], {}
     tally_all: dict[str, float] = {}
     voted_on: list[str] = []  # every role's options as voted on, so a vote's option_index stays readable
     for slot in [s for s in options if s[0] == incident.id]:  # the slots actually built, fallbacks included
@@ -419,17 +457,20 @@ def _resolve(
         free = [b for b in options[slot] if b.vehicle not in taken]
         voted_on += [b.vehicle for b in options[slot]]
         if world.baseline:
-            assigned += [free[0].vehicle] if free else []
-            role_consensus.append(False)
-            continue
-        winner, consensus, tally, escalation = _resolve_role(
-            world, incident, role, options[slot], free, votes.get(slot, []), claims, checks)
-        tally_all.update(tally)
-        role_consensus.append(consensus)
+            winner, consensus, escalation = (free[0].vehicle if free else None), False, None
+        else:
+            winner, consensus, tally, escalation = _resolve_role(
+                world, incident, role, options[slot], free, votes.get(slot, []), claims, checks)
+            tally_all.update(tally)
         if escalation:
             escalations.append(escalation)
         elif winner:
             assigned.append(winner)
+        elif keep := _incumbent(world, incident, role, taken):
+            # Nobody new to send: the vehicle already on its way keeps the role (nothing to disagree about).
+            assigned.append(keep)
+            kept[role], consensus = keep, not world.baseline
+        role_consensus.append(consensus)
 
     evidence = None
     if escalations:
@@ -438,6 +479,8 @@ def _resolve(
         fallback = _resolve_time_fallback(world, incident, bids, options, taken)
         if fallback:
             assigned, role_consensus, evidence = [fallback["vehicle"]], [False], {"fallback": fallback}
+    if kept:
+        evidence = {**(evidence or {}), "kept": kept}
     return plan.model_copy(update={
         "assigned": assigned,
         "consensus": bool(role_consensus) and all(role_consensus),
@@ -446,6 +489,13 @@ def _resolve(
         "tally": tally_all,
         "evidence": evidence,
     })
+
+
+def _incumbent(world: World, incident: Incident, role: str, taken: set[str]) -> str | None:
+    """Return the trusted vehicle of this role already en route to or on scene at the incident, if it is still free to keep."""
+    return next((v.id for v in sorted(world.vehicles.values(), key=lambda v: v.id)
+                 if v.type == role and v.target_incident == incident.id and v.status in ("en_route", "on_scene")
+                 and not v.untrusted and v.id not in taken), None)
 
 
 def _resolve_time_fallback(

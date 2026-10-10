@@ -109,7 +109,7 @@ def test_round_models_through_a_full_negotiation(monkeypatch):
     llm.reset_call_count()
     world = build_fake_world()
     world.incidents = {"I1": world.incidents["I1"]}
-    world.injections["A2"] = {"type": "refuse_all"}
+    world.injections["A2"] = {"kind": "refuse_all"}
 
     plans = asyncio.run(protocol.run_round(world))  # llm_fn=None: the real call_claude path
     assert plans[0].assigned == ["A1"]

@@ -81,7 +81,7 @@ def test_hacked_vehicle_keeps_its_prompt_and_gets_a_corrupted_view():
     """A preset changes only the hacked vehicle's user message (its sensor view), never its system prompt."""
     w = build_fake_world()
     honest_prompt = VehicleAgent("A2").system_prompt(w)
-    w.injections["A2"] = {"type": "refuse_all"}
+    w.injections["A2"] = {"kind": "refuse_all"}
     assert VehicleAgent("A2").system_prompt(w) == honest_prompt
     assert '"status": "unavailable"' in VehicleAgent("A2").build_user_message(w)
     assert '"status": "unavailable"' not in VehicleAgent("A3").build_user_message(w)

@@ -39,14 +39,14 @@ def run(tmp_path_factory):
 
 
 def test_scenario_through_tick_70_emits_the_expected_events(run):
-    """Four calls arrive, at least four plans commit, A2 is compromised once, and claims get verified."""
+    """Four calls arrive, at least four plans commit, A1 is compromised once, and claims get verified."""
     counts = run["counts"]
     assert counts["call_received"] == 4
     assert counts["plan_committed"] >= 4
     assert counts["vehicle_compromised"] == 1
     assert counts["claim_verified"] >= 1
     hacked = next(e for e in run["engine"].world.events if e.type == "vehicle_compromised")
-    assert (hacked.tick, hacked.vehicle, hacked.data) == (60, "A2", {"preset": "on_scene_resolved"})
+    assert (hacked.tick, hacked.vehicle, hacked.data) == (60, "A1", {"preset": "on_scene_resolved"})
 
 
 def test_events_are_in_tick_order_and_carry_their_fields(run):

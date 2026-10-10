@@ -263,7 +263,7 @@ def test_injection_reaches_only_own_prompt_and_stub_does_not_claim_detection(tmp
         engine = Engine(tmp_path, world=one_incident(), llm_fn=recording)
         try:
             await engine.inject("A2", "TEST OVERRIDE PRIVATE")
-            assert engine.world.injections["A2"] == {"type": "raw", "text": "TEST OVERRIDE PRIVATE"}
+            assert engine.world.injections["A2"] == {"kind": "raw", "text": "TEST OVERRIDE PRIVATE"}
             await engine.run_round()
             assert '"sensor_note": "TEST OVERRIDE PRIVATE"' in users["A2"]
             assert all("TEST OVERRIDE PRIVATE" not in u for vid, u in users.items() if vid != "A2")
@@ -495,8 +495,9 @@ def test_scripted_events_use_team_scenario_and_preserve_display_fields(tmp_path)
             assert engine.world.incidents["I3"].severity == 5
             for _ in range(20):
                 await engine.step()
-            assert config["events"][5]["preset_id"] == "on_scene_resolved"
-            assert engine.world.injections["A2"] == {"type": "on_scene_resolved"}
+            hack = next(e for e in config["events"] if e["type"] == "inject")
+            assert hack["preset_id"] == "on_scene_resolved" and hack["tick"] == 60
+            assert engine.world.injections[hack["vehicle"]] == {"kind": "on_scene_resolved"}
             assert sum(e["event"] == "vehicle_hacked" for e in records(engine)) == 1
             assert (await engine.state())["presets"] == config["presets"]
         finally:
@@ -579,7 +580,8 @@ def test_labels_persist_outside_feed_and_reset_with_scenario(tmp_path):
             await engine.set_mode("baseline")
             state = await engine.state()
             assert "N1" not in state["labels"] and "I3" not in state["labels"]
-            assert state["labels"]["I1"] == "Cardiac arrest, 1st & Santa Clara"
+            assert state["labels"]["I1"] == next(e["incident"]["label"] for e in load_scenario()["events"]
+                                                 if e["type"] == "incident" and e["incident"]["id"] == "I1")
         finally:
             await engine.stop()
     asyncio.run(scenario())

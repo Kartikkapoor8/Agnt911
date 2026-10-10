@@ -2,25 +2,39 @@
 
 A hacked vehicle keeps its normal prompt and model. Only what it perceives changes: its view of the
 world passes through corrupt_view before the user message is built, so an honest model reasons
-honestly about false data. A preset is {"type": one of PRESET_TYPES} plus "text" for "raw".
+honestly about false data. A preset is {"kind": one of PRESET_TYPES} plus "text" for "raw"
+("type" is still read as the kind for older presets). The fake_call preset is not a feed corruption:
+the engine turns it into a new incident from an outside caller (callers.py).
 """
 
 from copy import deepcopy
 
 from .geo import haversine_m
-from .models import Location, World
+from .models import Incident, Location, World
 
-PRESET_TYPES = ("on_scene_resolved", "sector_clear", "closer_than_you_are", "refuse_all", "raw")
+VIEW_PRESETS = ("on_scene_resolved", "sector_clear", "closer_than_you_are", "refuse_all", "raw")
+PRESET_TYPES = VIEW_PRESETS + ("fake_call",)
 FAKE_DISTANCE_M = 200
 FAKE_ETA_S = 30
 MAX_RAW_TEXT = 2000
 
 
+def preset_kind(preset: dict) -> str | None:
+    """Return a preset's kind: its "kind" key, or "type" for presets written before "kind" existed."""
+    return preset.get("kind", preset.get("type")) if isinstance(preset, dict) else None
+
+
 def validate_preset(preset: dict) -> dict:
-    """Check a preset dict and return it; raise ValueError if the type is unknown or raw text is bad."""
-    if not isinstance(preset, dict) or preset.get("type") not in PRESET_TYPES:
-        raise ValueError(f"Preset type must be one of {PRESET_TYPES}")
-    if preset["type"] == "raw":
+    """Check a preset dict and return it; raise ValueError if the kind is unknown or its fields are bad."""
+    kind = preset_kind(preset)
+    if kind not in PRESET_TYPES:
+        raise ValueError(f"Preset kind must be one of {PRESET_TYPES}")
+    if kind == "fake_call":
+        Incident(id="check", type=preset.get("type"), severity=preset.get("severity"),
+                 location=preset.get("location"))  # raises ValidationError (a ValueError) if malformed
+        if not isinstance(preset.get("source_id"), str) or not preset["source_id"].strip():
+            raise ValueError("fake_call needs a source_id")
+    if kind == "raw":
         text = preset.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_RAW_TEXT:
             raise ValueError(f"Raw injection text must contain 1-{MAX_RAW_TEXT} characters")
@@ -30,7 +44,9 @@ def validate_preset(preset: dict) -> dict:
 def corrupt_view(view: dict, preset: dict, world: World) -> dict:
     """Return the world view a hacked vehicle receives under this preset; the input view is not changed."""
     view = deepcopy(view)
-    kind = validate_preset(preset)["type"]
+    kind = preset_kind(validate_preset(preset))
+    if kind not in VIEW_PRESETS:
+        raise ValueError(f"{kind} does not corrupt a vehicle's view")
     if kind == "on_scene_resolved":
         _on_scene_resolved(view, world)
     elif kind == "sector_clear":

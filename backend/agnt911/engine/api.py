@@ -14,8 +14,11 @@ from .world import load_scenario
 
 
 class Injection(BaseModel):
-    """Judge hack: vehicle_id plus a scenario preset_id, or free text that becomes a raw sensor note."""
-    vehicle_id: str
+    """Judge hack: vehicle_id plus a scenario preset_id, or free text that becomes a raw sensor note.
+
+    vehicle_id may be left out only for the fake_call preset, which places a call instead of hacking a vehicle.
+    """
+    vehicle_id: str | None = None
     preset_id: str | None = None
     text: str | None = Field(default=None, min_length=1, max_length=2000)
 

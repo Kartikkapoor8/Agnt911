@@ -48,6 +48,11 @@ class Incident(BaseModel):
     location: Location
     status: IncidentStatus = "open"
     assigned: list[str] = Field(default_factory=list)
+    # "911" for scripted and real calls; "operator" for a call an outside caller placed (see callers.py).
+    source: Literal["911", "operator"] = "911"
+    source_id: str | None = None
+    # Set when the first police car on scene finds nothing there; the incident is then closed as resolved.
+    false_report: bool = False
 
 
 class Claim(BaseModel):
@@ -130,6 +135,7 @@ EventType = Literal[
     "call_received", "call_escalated", "bid_placed", "bid_withdrawn", "vote_cast", "plan_committed",
     "plan_no_consensus", "vehicle_compromised", "claim_verified", "trust_changed", "vehicle_untrusted",
     "vehicle_trusted_again", "escalated_to_human", "human_resolved", "vehicle_arrived", "incident_resolved",
+    "incident_discredited",
 ]
 
 
@@ -153,5 +159,7 @@ class World(BaseModel):
     baseline: bool = False
     # Hacked vehicles: vehicle id -> preset dict ({"type": ...}, plus "text" for "raw"). See feed.py.
     injections: dict[str, dict] = Field(default_factory=dict)
+    # Caller credibility by source_id: starts at 1.0, drops 0.3 for each discredited call.
+    callers: dict[str, float] = Field(default_factory=dict)
     # Typed event stream, oldest first. Never shown to vehicles; /state serves the last 500.
     events: list[Event] = Field(default_factory=list)
