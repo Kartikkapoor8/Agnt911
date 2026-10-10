@@ -101,6 +101,8 @@ Each incident type needs these vehicle types, voted on separately. Severity 1-2 
 | hazard | fire, police |
 
 A bid is an option only if its vehicle has that role's type, its `capability_match` is at least 0.5 and the vehicle is not untrusted; at most 4 per role. Incidents resolve highest severity first; once a vehicle is assigned it drops out of every later incident's options.
+
+Fallback for severity 1-2 (one role needed): if the first role has no eligible bids, the next role in the list takes the slot and is voted on. If the slot's options were all assigned to higher-severity incidents by resolve time, the best free bid of the next role is assigned without a vote: `consensus` is false and `evidence` is `{"fallback": {"vehicle", "role", "reason"}}`.
 - `Check {claim_id, verifier: vehicle id or null, result: "confirmed" | "contradicted" | "unverifiable", vehicle, incident, round}`: one verification, stored on the plan for that incident.
 - `AgentOutput {claims: [Claim], bids: [Bid], vote: Vote or null}`: what one vehicle returns per round, at most one bid per incident.
 - `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false}`: the whole city at one tick.

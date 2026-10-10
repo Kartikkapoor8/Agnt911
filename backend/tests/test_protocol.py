@@ -310,3 +310,18 @@ def test_minor_hazard_with_no_fire_bids_falls_back_to_police():
     assert plan.options == ["P1", "P2"] and plan.assigned == ["P1"] and plan.consensus
     assert {m.role for m in world.recent_messages if m.kind == "vote"} == {"police"}
     assert sum(1 for _v, rnd, _t in llm.calls if rnd == 3) == 7
+
+
+def test_minor_hazard_whose_fire_engine_is_taken_falls_back_to_police_at_resolve():
+    """F1 bids on the fire and the hazard, wins the fire first; the hazard then goes to the best free police car."""
+    def only_f1_fights_fire(vid, bids):
+        return [] if vid == "F2" else bids
+
+    world = build_fake_world()
+    world.incidents = {i: world.incidents[i] for i in ("I2", "I4")}
+    i2, i4 = run(world, ScriptedLLM(edit_bids=only_f1_fights_fire))
+    assert i2.assigned == ["F1"] and i2.consensus
+    assert i4.options == ["F1"] and "F1" not in i4.tally
+    assert i4.assigned == ["P1"] and not i4.consensus and not i4.escalated
+    assert i4.evidence == {"fallback": {"vehicle": "P1", "role": "police",
+                                        "reason": "every fire option was assigned to a higher-severity incident"}}

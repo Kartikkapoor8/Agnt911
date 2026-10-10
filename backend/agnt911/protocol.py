@@ -9,7 +9,8 @@ One call to run_round decides every open incident (or the ones listed):
   4. RESOLVE  plain code, highest severity first: weight votes by trust; more than 60% of
               honest weight wins. A vehicle that wins anywhere leaves every later option list
               and those votes are re-tallied. No winner: severity 1-3 takes the heaviest
-              option, severity 4-5 asks a human.
+              option, severity 4-5 asks a human. A severity 1-2 incident whose role has no
+              eligible bids, or whose options were all taken, goes to the next role in its list.
 Claims from rounds 1 and 2 go through the trust module's verification hook.
 Baseline mode (world.baseline) is the central dispatcher: round 1 only, no checks,
 every report believed, best eligible bid per role wins.
@@ -121,7 +122,7 @@ async def run_round(
     # Baseline: the central dispatcher stops here, with no checks and no debate
     if world.baseline:
         options = _all_options(world, bids, incidents)
-        return _resolve_all(world, incidents, options, {}, claims, [])
+        return _resolve_all(world, incidents, bids, options, {}, claims, [])
     checks = _verify(world, claims, PROPOSE)
 
     # Round 2: COUNTER
@@ -145,7 +146,7 @@ async def run_round(
     votes = _record_votes(world, outputs, options)
 
     # Round 4: RESOLVE (no LLM)
-    return _resolve_all(world, incidents, options, votes, claims, checks)
+    return _resolve_all(world, incidents, bids, options, votes, claims, checks)
 
 
 def _incidents_to_decide(world: World, incident_ids: list[str] | None) -> list[Incident]:
@@ -320,6 +321,7 @@ def _record_votes(
 def _resolve_all(
     world: World,
     incidents: list[Incident],
+    bids: dict[tuple[str, str], Bid],
     options: dict[Slot, list[Bid]],
     votes: dict[Slot, list[Vote]],
     claims: list[Claim],
@@ -329,7 +331,7 @@ def _resolve_all(
     taken: set[str] = set()
     plans: dict[str, Plan] = {}
     for incident in sorted(incidents, key=lambda i: -i.severity):  # stable: ties keep incident order
-        plan = _resolve(world, incident, options, votes, claims, checks, taken)
+        plan = _resolve(world, incident, bids, options, votes, claims, checks, taken)
         taken.update(plan.assigned)
         plans[incident.id] = plan
     return [plans[i.id] for i in incidents]
@@ -338,6 +340,7 @@ def _resolve_all(
 def _resolve(
     world: World,
     incident: Incident,
+    bids: dict[tuple[str, str], Bid],
     options: dict[Slot, list[Bid]],
     votes: dict[Slot, list[Vote]],
     claims: list[Claim],
@@ -382,6 +385,10 @@ def _resolve(
     evidence = None
     if escalations:
         evidence = {**escalations[0], "also": escalations[1:]} if len(escalations) > 1 else escalations[0]
+    elif not assigned and incident.severity <= SINGLE_ROLE_MAX_SEVERITY:
+        fallback = _resolve_time_fallback(world, incident, bids, options, taken)
+        if fallback:
+            assigned, role_consensus, evidence = [fallback["vehicle"]], [False], {"fallback": fallback}
     return plan.model_copy(update={
         "assigned": assigned,
         "consensus": bool(role_consensus) and all(role_consensus),
@@ -390,6 +397,28 @@ def _resolve(
         "tally": tally_all,
         "evidence": evidence,
     })
+
+
+def _resolve_time_fallback(
+    world: World,
+    incident: Incident,
+    bids: dict[tuple[str, str], Bid],
+    options: dict[Slot, list[Bid]],
+    taken: set[str],
+) -> dict | None:
+    """For a minor incident left empty at resolve time, take the best free bid of the next role in its list.
+
+    Nobody voted on this vehicle, so the plan carries no consensus. Returns {vehicle, role, reason} or None.
+    """
+    used = next(role for iid, role in options if iid == incident.id)
+    roles = ROLES[incident.type]
+    reason = (f"every {used} option was assigned to a higher-severity incident"
+              if options[(incident.id, used)] else f"no eligible {used} bids")
+    for role in roles[roles.index(used) + 1:]:
+        free = [b for b in _options(world, bids, incident.id, role) if b.vehicle not in taken]
+        if free:
+            return {"vehicle": free[0].vehicle, "role": role, "reason": reason}
+    return None
 
 
 def _resolve_role(

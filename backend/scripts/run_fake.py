@@ -77,6 +77,9 @@ def print_transcript(world: World, plans: list[Plan]) -> None:
         outcome = f"-> {', '.join(p.assigned)} ({how})" if p.assigned else "-> nobody"
         if p.escalated:
             outcome += f"; ESCALATED {p.evidence['role']} to human, options {p.evidence.get('options')}"
+        if p.evidence and "fallback" in p.evidence:
+            f = p.evidence["fallback"]
+            outcome += f" (fallback to {f['role']}: {f['reason']})"
         if p.evidence and "believed" in p.evidence:
             b = p.evidence["believed"]
             outcome += f" (believed {b['vehicle']}'s '{b['type']}' report)"
