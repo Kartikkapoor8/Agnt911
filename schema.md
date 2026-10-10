@@ -51,10 +51,11 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | assigned | list of vehicle ids | default empty |
 
 ## Message
-A message is a `Claim`: one vehicle telling the fleet something. The message bus adds `sig` (HMAC); agents leave it `""`.
+`World.recent_messages` holds three kinds of message, told apart by `kind`: a `Claim` (one vehicle telling the fleet something), a `Bid`, or a `Vote`. Each carries `round` (1 propose, 2 counter, 3 vote) so the feed can group them. The message bus adds `sig` (HMAC); agents and the protocol leave it `""`. The protocol overwrites `id`, `tick` and `vehicle` on every claim with the real sender, so a vehicle cannot speak as another.
 
 ```json
 {
+  "kind": "claim",
   "id": "c1",
   "tick": 3,
   "vehicle": "A1",
@@ -64,13 +65,15 @@ A message is a `Claim`: one vehicle telling the fleet something. The message bus
   "value": null,
   "confidence": 0.9,
   "reasoning": "I am at the scene.",
+  "round": 1,
   "sig": ""
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| id | string | unique per claim |
+| kind | `"claim"` | default `"claim"` |
+| id | string | unique per claim, `{vehicle}-r{round}-c{n}` |
 | tick | int | world tick when sent |
 | vehicle | string | sender id |
 | type | `"on_scene"` \| `"en_route"` \| `"resolved"` \| `"sector_clear"` \| `"available"` \| `"capability"` \| `"observation"` | |
@@ -79,14 +82,46 @@ A message is a `Claim`: one vehicle telling the fleet something. The message bus
 | value | object or null | free-form payload |
 | confidence | float | 0 to 1 |
 | reasoning | string | |
+| round | int | protocol round it was sent in, default 0 |
 | sig | string | default `""` |
 
 ### Other negotiation models
-- `Bid {vehicle, incident, eta_seconds: int, capability_match: 0-1, cost_to_district: float >= 0, confidence: 0-1, reasoning}`: offer to respond to one incident.
-- `Vote {vehicle, incident, option_index: int, reasoning}`: vote for one option of a proposed plan.
-- `Plan {incident, assigned: [vehicle id], round_reached: int, consensus: bool, escalated: bool}`: outcome of negotiating one incident (max 4 rounds).
-- `AgentOutput {claims: [Claim], bid: Bid or null, vote: Vote or null}`: what one vehicle returns per round.
-- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim], baseline: bool = false}`: the whole city at one tick.
+- `Bid {kind: "bid", vehicle, incident, eta_seconds: int, capability_match: 0-1, cost_to_district: float >= 0, confidence: 0-1, reasoning, round, sig}`: offer to respond to one incident.
+- `Vote {kind: "vote", vehicle, incident, option_index: int, reasoning, round, sig}`: vote for one option (index into `Plan.options`).
+- `Plan {incident, assigned: [vehicle id], round_reached: int, consensus: bool, escalated: bool, options: [vehicle id], tally: {vehicle id: weight}, checks: [Check], evidence: object or null}`: outcome of negotiating one incident. `options` are the vote choices in order; `tally` is trust-weighted votes per option; `evidence` is set when escalated (the `should_escalate` return) or, in baseline, `{"believed": Claim}` when the dispatcher took a report at face value.
+- `Check {claim_id, verifier: vehicle id or null, result: "confirmed" | "contradicted" | "unverifiable", vehicle, incident, round}`: one verification, stored on the plan for that incident.
+- `AgentOutput {claims: [Claim], bids: [Bid], vote: Vote or null}`: what one vehicle returns per round, at most one bid per incident.
+- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false}`: the whole city at one tick.
+
+## Requests
+
+### Kartik -> Greg (engine)
+- `async def protocol.run_round(world, incident_ids=None, llm_fn=None) -> list[Plan]`. It is a coroutine: `await` it from the tick loop. It appends to `world.recent_messages` and writes trust changes into `world.vehicles`; it does not touch `incident.assigned` or vehicle targets, the engine applies the plans.
+- `/inject` needs a place the agents can read: proposal `World.injections: {vehicle id: text}` (not added yet), which `VehicleAgent.system_prompt` will append.
+
+### Kartik -> Chris (trust)
+`backend/agnt911/trust.py` with these signatures. Until it exists, protocol uses `trust_stub.py`, which has the same shapes. `tests/test_contracts.py` checks the names and parameters.
+- `should_verify(claim: Claim, vehicle: Vehicle, round_no: int) -> bool`: `vehicle` is the claim's sender.
+- `check_claim(claim: Claim, world: World) -> "confirmed" | "contradicted" | "unverifiable"`
+- `update_trust(vehicle: Vehicle, result: str) -> Vehicle`: return the updated vehicle (protocol stores it), including `untrusted` once trust is below 0.4.
+- `vote_weight(vehicle: Vehicle) -> float`
+- `should_escalate(round_state: dict) -> dict | None`: return `{"options": [vehicle id, vehicle id], "evidence": {...}}` to ask a human, or `None` to let the heaviest option win without consensus.
+
+Stuck-vote payload (`round_state`), sent only for severity 4-5 when no option has more than 60% of honest weight:
+```json
+{
+  "incident": "I1",
+  "severity": 5,
+  "round": 4,
+  "options": [Bid, ...],
+  "tally": {"A1": 3.0, "A3": 4.0},
+  "honest_total": 7.0,
+  "threshold": 4.2,
+  "votes": [Vote, ...],
+  "contradicting_claims": [Claim, ...]
+}
+```
+`contradicting_claims` = observation claims about that incident plus any claim a check found `contradicted`.
 
 ## GET /state response
 (to fill)

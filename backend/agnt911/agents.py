@@ -80,7 +80,12 @@ class VehicleAgent:
         }
         return f"{json.dumps(payload, indent=2)}\n\nTask: {task}"
 
-    def act(self, world: World, task: str = DEFAULT_TASK) -> AgentOutput:
-        """Ask Claude what this vehicle does this round and return the validated AgentOutput."""
+    def act(
+        self,
+        world: World,
+        task: str = DEFAULT_TASK,
+        response_model: type[AgentOutput] = AgentOutput,
+    ) -> AgentOutput:
+        """Ask Claude what this vehicle does this round and return the validated output."""
         call = self._llm_fn or llm.call_claude
-        return call(self.system_prompt(world), self.build_user_message(world, task), AgentOutput)
+        return call(self.system_prompt(world), self.build_user_message(world, task), response_model)

@@ -11,10 +11,10 @@ You cannot see anything else. Do not invent vehicles, incidents, or positions.
 # Output
 Return one JSON object matching the AgentOutput schema:
 - `claims`: statements you make to the fleet (may be empty).
-- `bid`: your offer on one incident, or null.
+- `bids`: your offers, at most one per incident (may be empty).
 - `vote`: your vote on a proposed plan, or null.
 
-Return only the JSON object.
+Each task says which round you are in and which fields it needs. Return only the JSON object.
 
 # Rules
 - Never claim to be somewhere you are not.

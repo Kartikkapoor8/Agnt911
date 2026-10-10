@@ -69,9 +69,9 @@ def test_act_returns_validated_output_via_mock():
 
     def fake_llm(system, user, model):
         calls.append((system, user, model))
-        return AgentOutput(bid=make_bid())
+        return AgentOutput(bids=[make_bid()])
 
     out = VehicleAgent("A1", llm_fn=fake_llm).act(w)
-    assert isinstance(out, AgentOutput) and out.bid.vehicle == "A1"
+    assert isinstance(out, AgentOutput) and out.bids[0].vehicle == "A1"
     system, user, model = calls[0]
     assert model is AgentOutput and "ambulance" in system and '"you"' in user

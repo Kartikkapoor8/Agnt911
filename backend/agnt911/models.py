@@ -53,6 +53,7 @@ class Incident(BaseModel):
 class Claim(BaseModel):
     """A statement a vehicle makes to the fleet about itself or the world."""
 
+    kind: Literal["claim"] = "claim"
     id: str
     tick: int
     vehicle: str
@@ -62,12 +63,14 @@ class Claim(BaseModel):
     value: dict | None = None
     confidence: float = Field(ge=0, le=1)
     reasoning: str
+    round: int = 0
     sig: str = ""
 
 
 class Bid(BaseModel):
     """A vehicle's offer to respond to one incident."""
 
+    kind: Literal["bid"] = "bid"
     vehicle: str
     incident: str
     eta_seconds: int = Field(ge=0)
@@ -75,15 +78,23 @@ class Bid(BaseModel):
     cost_to_district: float = Field(ge=0)
     confidence: float = Field(ge=0, le=1)
     reasoning: str
+    round: int = 0
+    sig: str = ""
 
 
 class Vote(BaseModel):
     """A vehicle's vote for one option in a proposed plan."""
 
+    kind: Literal["vote"] = "vote"
     vehicle: str
     incident: str
     option_index: int = Field(ge=0)
     reasoning: str
+    round: int = 0
+    sig: str = ""
+
+
+Message = Claim | Bid | Vote
 
 
 class Plan(BaseModel):
@@ -94,13 +105,17 @@ class Plan(BaseModel):
     round_reached: int = Field(ge=0)
     consensus: bool
     escalated: bool
+    options: list[str] = Field(default_factory=list)
+    tally: dict[str, float] = Field(default_factory=dict)
+    checks: list[dict] = Field(default_factory=list)
+    evidence: dict | None = None
 
 
 class AgentOutput(BaseModel):
     """Everything one vehicle returns in one round."""
 
     claims: list[Claim] = Field(default_factory=list)
-    bid: Bid | None = None
+    bids: list[Bid] = Field(default_factory=list)
     vote: Vote | None = None
 
 
@@ -110,5 +125,5 @@ class World(BaseModel):
     tick: int
     vehicles: dict[str, Vehicle]
     incidents: dict[str, Incident]
-    recent_messages: list[Claim] = Field(default_factory=list)
+    recent_messages: list[Message] = Field(default_factory=list)
     baseline: bool = False

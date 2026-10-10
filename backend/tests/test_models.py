@@ -25,16 +25,19 @@ BID = Bid(
     cost_to_district=0.2, confidence=0.8, reasoning="closest",
 )
 
+VOTE = Vote(vehicle="A1", incident="I1", option_index=0, reasoning="best plan")
+
 ALL = [
     LOC,
     Vehicle(id="A1", type="ambulance", location=LOC, home_district="Downtown"),
     Incident(id="I1", type="medical", severity=5, location=LOC, assigned=["A1"]),
     CLAIM,
     BID,
-    Vote(vehicle="A1", incident="I1", option_index=0, reasoning="best plan"),
+    VOTE,
     Plan(incident="I1", assigned=["A1"], round_reached=2, consensus=True, escalated=False),
-    AgentOutput(claims=[CLAIM], bid=BID, vote=None),
+    AgentOutput(claims=[CLAIM], bids=[BID], vote=None),
     build_fake_world(),
+    World(tick=1, vehicles={}, incidents={}, recent_messages=[CLAIM, BID, VOTE]),
 ]
 
 
