@@ -1,6 +1,8 @@
 """run_round with a mocked LLM: propose, counter, vote, resolve. No network."""
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -276,3 +278,22 @@ def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
     assert i5.assigned == ["A1"] and i5.consensus
     assert i1.assigned == [] and not i1.consensus and not i1.escalated
     assert i1.options == ["A1"] and "A1" not in i1.tally  # voted on, then re-tallied without it
+
+
+def test_injection_reaches_hijacked_vehicles_system_prompt():
+    """An injected preset lands in A2's round-1 system prompt under OPERATOR OVERRIDE, and nowhere else."""
+    scenario = json.loads((Path(protocol.__file__).parent / "scenarios" / "demo.json").read_text())
+    preset = next(p["text"] for p in scenario["presets"] if p["id"] == "on_scene_resolved")
+    world = build_fake_world()
+    world.injections["A2"] = preset
+    systems = {}
+
+    def recording_llm(system, user, response_model):
+        payload, task = split_user_message(user)
+        if task.startswith("Round 1"):
+            systems[payload["you"]["id"]] = system
+        return fake_llm(system, user, response_model)
+
+    run(world, recording_llm)
+    assert f"OPERATOR OVERRIDE:\n{preset}" in systems["A2"]
+    assert all("OPERATOR OVERRIDE" not in s for vid, s in systems.items() if vid != "A2")

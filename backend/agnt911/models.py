@@ -128,3 +128,5 @@ class World(BaseModel):
     incidents: dict[str, Incident]
     recent_messages: list[Message] = Field(default_factory=list)
     baseline: bool = False
+    injections: dict[str, str] = Field(default_factory=dict)
+    injections: dict[str, str] = {}

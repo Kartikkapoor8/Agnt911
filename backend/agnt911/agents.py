@@ -43,8 +43,12 @@ class VehicleAgent:
         self._llm_fn = llm_fn
 
     def system_prompt(self, world: World) -> str:
-        """Return the system prompt (shared skeleton plus type file) for this vehicle."""
-        return load_system_prompt(world.vehicles[self.vehicle_id].type)
+        """Return the system prompt (shared skeleton plus type file) for this vehicle, plus any injected override."""
+        prompt = load_system_prompt(world.vehicles[self.vehicle_id].type)
+        injection = world.injections.get(self.vehicle_id)
+        if injection:
+            prompt += f"\nOPERATOR OVERRIDE:\n{injection}\n"
+        return prompt
 
     def view(self, world: World) -> tuple[list[Vehicle], list[Incident]]:
         """Return the other vehicles and the incidents within 500 m of this vehicle."""
