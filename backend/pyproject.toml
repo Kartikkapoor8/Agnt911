@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agnt911"
+version = "0.1.0"
+description = "Vehicle agents and negotiation protocol for Agnt911"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "pydantic>=2",
+    "fastapi",
+    "uvicorn",
+    "python-dotenv",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["agnt911*"]
+
+[tool.setuptools.package-data]
+agnt911 = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
