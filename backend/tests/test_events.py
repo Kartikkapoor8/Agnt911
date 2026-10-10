@@ -84,3 +84,12 @@ def test_no_vehicle_ever_sees_the_event_stream(run):
     """Events are for the frontend: no prompt contains event names or the compromised preset."""
     assert run["prompts"]
     assert not any("vehicle_compromised" in p or "claim_verified" in p for p in run["prompts"])
+
+
+def test_state_check_events_have_pass_fail_and_trust_before_after(run):
+    """/state.check_events: one row per check, pass/fail/inconclusive, with the target's trust before and after."""
+    rows = run["state"]["check_events"]
+    assert rows and {r["result"] for r in rows} <= {"pass", "fail", "inconclusive"}
+    fail = next(r for r in rows if r["result"] == "fail" and r["target"] == "A1")
+    assert (fail["tick"], fail["trust_before"], fail["trust_after"]) == (60, 1.0, 0.7)
+    assert all(r["trust_before"] == r["trust_after"] for r in rows if r["result"] != "fail")

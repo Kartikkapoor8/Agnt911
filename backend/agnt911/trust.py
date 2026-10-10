@@ -91,7 +91,10 @@ def check_claim(claim: Claim, world: World) -> str:
         kind, subject = _subject(claim, world)
         if kind == "ambiguous" and _has_numbers(claim.value):
             return UNVERIFIABLE  # numbers about an unclear vehicle: don't blame the sender for them
-        if _numbers_lie(claim, world, subject) or _position_lies(claim, world, sender):
+        lie = _numbers_lie(claim, world, subject)
+        if lie and kind == "mentioned" and not _numbers_lie(claim, world, sender):
+            return UNVERIFIABLE  # a vehicle named only in passing: the numbers fit the sender, so blame nobody
+        if lie or _position_lies(claim, world, sender):
             return CONTRADICTED
     return _TYPE_RULES[claim.type](claim, world, sender)
 
@@ -301,7 +304,7 @@ def _number(value: dict | None, key: str) -> float | None:
 
 
 def _subject(claim: Claim, world: World) -> tuple[str, Vehicle | None]:
-    """Say whose position an observation's numbers describe: ("self", sender), ("other", vehicle) or ("ambiguous", None).
+    """Say whose position an observation's numbers describe: ("self", sender), ("other" or "mentioned", vehicle) or ("ambiguous", None).
 
     Only observations can be about another vehicle. The value names it (vehicle, subject, target_vehicle or
     other); without such a key, a single other vehicle id in the reasoning names it. A value naming the
@@ -312,12 +315,13 @@ def _subject(claim: Claim, world: World) -> tuple[str, Vehicle | None]:
         return "self", sender
     value = claim.value if isinstance(claim.value, dict) else {}
     named = {value[key].strip() for key in _SUBJECT_KEYS if isinstance(value.get(key), str)} & set(world.vehicles)
-    if not named:
-        named = {vid for vid in world.vehicles if re.search(rf"\b{re.escape(vid)}\b", claim.reasoning or "")}
+    kind = "other"
+    if not named:  # only the reasoning names it ("mentioned"): the numbers may still be the sender's own
+        named, kind = {vid for vid in world.vehicles if re.search(rf"\b{re.escape(vid)}\b", claim.reasoning or "")}, "mentioned"
     others = named - {claim.vehicle}
     if not others:
         return "self", sender
-    return ("other", world.vehicles[others.pop()]) if len(others) == 1 else ("ambiguous", None)
+    return (kind, world.vehicles[others.pop()]) if len(others) == 1 else ("ambiguous", None)
 
 
 def _has_numbers(value: dict | None) -> bool:
@@ -504,7 +508,7 @@ def _check_observation(claim: Claim, world: World, sender: Vehicle) -> str:
             return CONTRADICTED
         kind, subject = _subject(claim, world)
         distance = _number(value, "distance_m")
-        if kind == "other" and distance is not None:
+        if kind in ("other", "mentioned") and distance is not None:
             # A report about another vehicle checks out when that vehicle really is that far from the incident.
             actual = _distance_m(subject.location, incident.location)
             return CONFIRMED if abs(distance - actual) <= max(OBSERVATION_MATCH_M, 0.25 * actual) else UNVERIFIABLE

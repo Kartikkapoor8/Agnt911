@@ -13,7 +13,7 @@ import uuid
 from .. import llm, protocol, trust
 from ..agents import LLMFn
 from ..callers import create_fake_call, discredit
-from ..events import STATE_EVENT_LIMIT, emit
+from ..events import STATE_EVENT_LIMIT, check_events, emit
 from ..feed import preset_kind
 from ..fake_llm import fake_llm, split_user_message
 from ..models import Event, Incident, Plan, World
@@ -180,6 +180,7 @@ class Engine:
                       labels=dict(self.labels),
                       metrics=self.metrics, comparison=self.comparison, incident_timing=self.timing,
                       tick_records=list(self._tick_records),
+                      check_events=check_events(self.world.events, {v: t.trust for v, t in self._initial.vehicles.items()})[-STATE_EVENT_LIMIT:],
                       coverage={iid: covered(self.world, inc, self._coverage_roles.get(iid))
                                 for iid, inc in self.world.incidents.items()},
                       reported_handled=self.reported_handled, escalation=self.escalation,

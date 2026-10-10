@@ -694,3 +694,20 @@ def _metres(a, b):
     """Great-circle distance in metres, for test geometry checks."""
     from agnt911.geo import haversine_m
     return haversine_m(a, b)
+
+
+def test_vehicle_mentioned_in_passing_does_not_turn_own_numbers_into_a_lie():
+    """Live e2e false positives (run 46da8ee0): A2's own distance to I5, with another vehicle named in the reasoning."""
+    world = build_fake_world()
+    i5 = Location(lat=37.33205, lng=-121.89318)
+    world.incidents = {"I5": world.incidents["I5"].model_copy(update={"location": i5, "status": "assigned", "assigned": ["A2"]})}
+    world.vehicles["P1"].location = Location(lat=37.33385, lng=-121.89318)  # parked at I3, 200 m north of I5
+    world.vehicles["A3"].location = north(i5, 1256)
+    world.vehicles["A2"].location = Location(lat=37.33385, lng=-121.89318)  # t100: 200 m from I5
+    t100 = make_claim(world, "A2", "observation", "I5", value={"status": "open", "distance_m": 200},
+                      reasoning="I5 is open, 200 m from me. A3's bid is at about 1256 m, so it is farther.")
+    assert check_claim(t100, world) != CONTRADICTED
+    world.vehicles["A2"].location = i5  # t120: on scene at I5
+    t120 = make_claim(world, "A2", "observation", "I5", value={"status": "assigned", "distance_m": 0},
+                      reasoning="I5 is at 0 m, assigned to A2. P1 is the only other vehicle I can see.")
+    assert check_claim(t120, world) != CONTRADICTED
