@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 MODEL = "claude-sonnet-5-5"
 MAX_TOKENS = 2048
+TEMPERATURE = 0.2
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -49,7 +50,11 @@ def call_claude(system: str, user: str, response_model: type[T]) -> T:
     error: ValidationError | None = None
     for _attempt in range(2):
         reply = client.messages.create(
-            model=MODEL, max_tokens=MAX_TOKENS, system=system_full, messages=messages
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+            system=system_full,
+            messages=messages,
         )
         text = "".join(b.text for b in reply.content if getattr(b, "type", "") == "text")
         try:
