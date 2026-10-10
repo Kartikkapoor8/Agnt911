@@ -89,7 +89,8 @@ previous timing/metric summaries in `comparison`.
 
 - `GET /state`: the team's World fields (`tick`, `vehicles`, `incidents`,
   `recent_messages`, `baseline`) plus `run_id`, `seed`, `time_s`, `decision`,
-  `mode`, `compromised`, `plans`, `checks`, `events`, `coverage`, `incident_timing`,
+  `mode`, `compromised`, `plans`, `checks`, `events` (the typed stream, last 500; see
+  docs/events.md), `log` (the engine's own bounded record feed), `coverage`, `incident_timing`,
   `reported_handled`, `metrics`, `comparison`, `escalation`, `paused`, `integration`,
   `map_center`, `presets`, and `labels` (incident ID to display text). Labels stay
   available when their creation events leave the bounded feed and reset with the

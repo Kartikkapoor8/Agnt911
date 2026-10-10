@@ -12,8 +12,9 @@ import uuid
 
 from .. import llm, protocol
 from ..agents import LLMFn
+from ..events import STATE_EVENT_LIMIT, emit
 from ..fake_llm import fake_llm, split_user_message
-from ..models import Incident, Plan, World
+from ..models import Event, Incident, Plan, World
 from .bus import MessageBus, SignedHistory
 from .context import decision_rng
 from .logging import RunLog
@@ -90,11 +91,21 @@ class Engine:
                                             if k not in ("run_id", "event", "time_s")})
         self.events.append(record)
 
+    def _emit(self, type: str, **fields) -> None:
+        """Emit one typed event into the live world and write it to the run's JSONL."""
+        self._log_event(emit(self.world, type, **fields))
+
+    def _log_event(self, event: Event) -> None:
+        """Write one typed event to the JSONL (the full history; /state serves the last 500)."""
+        self.log.write("typed_event", self.time_s, decision=self.decision, **event.model_dump())
+
     def _record_created(self, incident: Incident, label: str | None = None) -> None:
         if label is not None:
             self.labels[incident.id] = label
         self.timing[incident.id] = {"created_at_s": self.time_s, "covered_at_s": None, "resolved_at_s": None}
         self._log("incident_created", incident=incident.model_dump(), label=label)
+        self._emit("call_received", incident=incident.id, incident_type=incident.type,
+                   severity=incident.severity, label=label)
 
     def _inject(self, vid: str, preset: dict) -> None:
         validate_injection(preset)
@@ -104,6 +115,7 @@ class Engine:
         self._revision += 1
         self._pending.update(i.id for i in self.world.incidents.values() if i.status != "resolved")
         self._log("vehicle_hacked", vehicle_id=vid)
+        self._emit("vehicle_compromised", vehicle=vid, preset=preset["type"])
 
     def _apply_events(self) -> None:
         while self._event_cursor < len(self._scheduled):
@@ -129,13 +141,15 @@ class Engine:
                     self._pending.add(iid)
                     self._revision += 1
                     self._log("incident_updated", incident=iid, severity=event["severity"], label=event.get("label"))
+                    self._emit("call_escalated", incident=iid, severity=event["severity"], label=event.get("label"))
 
     def _state(self) -> dict:
         result = self.world.model_dump(exclude={"injections"})
+        result["events"] = result["events"][-STATE_EVENT_LIMIT:]  # typed stream; the JSONL has every event
         result.update(run_id=self.run_id, seed=self.seed, time_s=self.time_s, decision=self.decision,
                       mode="baseline" if self.world.baseline else "protected",
                       compromised=list(self.world.injections), checks=list(self.checks),
-                      events=list(self.events), plans={iid: p.model_dump() for iid, p in self.plans.items()},
+                      log=list(self.events), plans={iid: p.model_dump() for iid, p in self.plans.items()},
                       labels=dict(self.labels),
                       metrics=self.metrics, comparison=self.comparison, incident_timing=self.timing,
                       coverage={iid: covered(self.world, inc, self._coverage_roles.get(iid))
@@ -232,6 +246,7 @@ class Engine:
                 self.decision += 1
                 decision, revision, run_id = self.decision, self._revision, self.run_id
                 snapshot = self.world.model_copy(deep=True)
+                events_before = len(snapshot.events)  # protocol emits after this point into the snapshot
                 active_bus = self.bus
 
                 def on_message(message):
@@ -291,6 +306,9 @@ class Engine:
                     self._log("round_failed", error=str(exc))
                     return
                 self._commit(assignments, "protocol")
+                for event in snapshot.events[events_before:]:  # the round's protocol events, only on commit
+                    self.world.events.append(event)
+                    self._log_event(event)
                 for vid, updated in snapshot.vehicles.items():
                     live = self.world.vehicles[vid]
                     if (live.trust, live.untrusted) != (updated.trust, updated.untrusted):
@@ -336,6 +354,7 @@ class Engine:
             self.time_s += dt_s
             for vid in arrivals:
                 self._log("vehicle_arrived", vehicle_id=vid, incident=self.world.vehicles[vid].target_incident)
+                self._emit("vehicle_arrived", vehicle=vid, incident=self.world.vehicles[vid].target_incident)
             self._refresh_coverage()
             for iid, incident in self.world.incidents.items():
                 covered_at = self.timing[iid]["covered_at_s"]
@@ -384,6 +403,8 @@ class Engine:
                 self._pending.add(incident_id)
                 self._revision += 1
             self._log("incident_updated", incident=incident_id, changes=changes, label=label)
+            if "severity" in changes:
+                self._emit("call_escalated", incident=incident_id, severity=changes["severity"], label=label)
 
     async def resolve_incident(self, incident_id: str) -> None:
         """Complete service only after physical coverage, release units, and reconsider open calls."""
@@ -408,6 +429,7 @@ class Engine:
         self._pending.update(i.id for i in self.world.incidents.values() if i.status == "open")
         self._revision += 1
         self._log("incident_resolved", incident=incident_id)
+        self._emit("incident_resolved", incident=incident_id)
 
     async def resolve(self, assignments: dict[str, str | None]) -> None:
         """Apply a compatible human plan for all pending escalations and resume the loops."""
@@ -437,6 +459,7 @@ class Engine:
             self.escalation = None
             self._revision += 1
             self._log("human_resolution", assignments=assignments)
+            self._emit("human_resolved", assignments=assignments)
 
     async def _tick_loop(self):
         previous = time.monotonic()

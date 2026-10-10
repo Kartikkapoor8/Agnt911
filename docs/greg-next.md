@@ -57,23 +57,9 @@ Paste this into your agent:
 >
 > Note: `set_mode` already copies `self.metrics` into `comparison`, so the baseline and protected runs line up once this lands.
 
-### 2. Checks in the shape Matthew asked for
+### 2. Checks in the shape Matthew asked for: done another way, nothing to build
 
-Paste this into your agent:
-
-> `/state.checks` holds protocol's raw dicts (`claim_id`, `verifier`, `result` of `confirmed`/`contradicted`/`unverifiable`). Matthew's feed wants events with `id`, `tick`, `checker`, `target`, `claim`, `result` of `pass`/`fail`, `trust_before` and `trust_after`, and Chris's `trust.check_event` builds exactly that. Leave `checks` as it is (tests read it) and add a second list.
->
-> 1. **`_new_run`:** add `self.check_events = deque(maxlen=500)`.
-> 2. **`run_round`, the commit block:** before the loop that copies trust from `snapshot.vehicles` into `self.world.vehicles`, add `replay = {vid: v.model_copy() for vid, v in self.world.vehicles.items()}`. In the loop over `checks.values()`, add:
->    ```python
->    claim, sender = claims[check["claim_id"]], replay[check["vehicle"]]
->    after = trust.update_trust(sender, check["result"])
->    replay[check["vehicle"]] = after
->    self.check_events.append(trust.check_event(claim, check["verifier"], check["result"], sender.trust, after.trust))
->    ```
->    (`claims` is the dict built earlier in `run_round`.)
-> 3. **`_state()`:** add `check_events=list(self.check_events)`.
-> 4. **Test:** in `test_claims_are_signed_before_trust_checks_and_changes_are_applied`, assert that each `check_events` entry has `result` in `{"pass", "fail", "inconclusive"}` and that a contradicted claim shows `trust_before - trust_after == 0.3`.
+Superseded by the typed event stream ("events: typed stream for frontend animations"). `/state.events` now carries `claim_verified` (`claim_id`, `verifier`, `result`, `claim_type`) and `trust_changed` (`old`, `new`, `reason`) for every check, emitted at verification time and merged when the round commits. If Matthew wants pass/fail wording, map it on the client: `confirmed` is pass, `contradicted` is fail, `unverifiable` is inconclusive (the same mapping as `trust.feed_result`). See docs/events.md. Don't add `check_events`.
 
 ### 3. Pacing: vehicles barely arrive in a 3-minute demo
 

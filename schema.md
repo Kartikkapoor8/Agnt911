@@ -107,7 +107,8 @@ A bid is an option only if its vehicle has that role's type, its `capability_mat
 Fallback for severity 1-2 (one role needed): if the first role has no eligible bids, the next role in the list takes the slot and is voted on. If the slot's options were all assigned to higher-severity incidents by resolve time, the best free bid of the next role is assigned without a vote: `consensus` is false and `evidence` is `{"fallback": {"vehicle", "role", "reason"}}`.
 - `Check {claim_id, verifier: vehicle id or null, result: "confirmed" | "contradicted" | "unverifiable", vehicle, incident, round}`: one verification, stored on the plan for that incident.
 - `AgentOutput {claims: [Claim], bids: [Bid], vote: Vote or null}`: what one vehicle returns per round, at most one bid per incident.
-- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false, injections: {vehicle id: preset} = {}}`: the whole city at one tick. `injections` holds hacked vehicles' presets (see Injection); `/state` never exposes it.
+- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false, injections: {vehicle id: preset} = {}, events: [Event] = []}`: the whole city at one tick. `injections` holds hacked vehicles' presets (see Injection); `/state` never exposes it.
+- `Event {tick, type, vehicle: id or null, incident: id or null, data: object}`: one typed event for frontend animations. `World.events` is oldest first; `/state.events` serves the last 500, and the JSONL keeps every one. The 16 types and their data fields are in docs/events.md.
 
 ## Requests
 

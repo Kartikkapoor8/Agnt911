@@ -126,6 +126,23 @@ class AgentOutput(BaseModel):
     vote: Vote | None = None
 
 
+EventType = Literal[
+    "call_received", "call_escalated", "bid_placed", "bid_withdrawn", "vote_cast", "plan_committed",
+    "plan_no_consensus", "vehicle_compromised", "claim_verified", "trust_changed", "vehicle_untrusted",
+    "vehicle_trusted_again", "escalated_to_human", "human_resolved", "vehicle_arrived", "incident_resolved",
+]
+
+
+class Event(BaseModel):
+    """One typed thing that happened, for frontend animations (docs/events.md lists every type)."""
+
+    tick: int
+    type: EventType
+    vehicle: str | None = None
+    incident: str | None = None
+    data: dict = Field(default_factory=dict)
+
+
 class World(BaseModel):
     """The full simulated city at one tick."""
 
@@ -136,3 +153,5 @@ class World(BaseModel):
     baseline: bool = False
     # Hacked vehicles: vehicle id -> preset dict ({"type": ...}, plus "text" for "raw"). See feed.py.
     injections: dict[str, dict] = Field(default_factory=dict)
+    # Typed event stream, oldest first. Never shown to vehicles; /state serves the last 500.
+    events: list[Event] = Field(default_factory=list)

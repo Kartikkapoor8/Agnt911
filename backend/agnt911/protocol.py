@@ -24,6 +24,7 @@ import logging
 from pydantic import Field
 
 from . import llm
+from .events import emit
 from .agents import VIEW_RADIUS_M, LLMFn, VehicleAgent, haversine_m
 from .models import AgentOutput, Bid, Claim, Incident, Plan, Vehicle, Vote, World
 
@@ -119,6 +120,8 @@ async def run_round(
     jobs = [(agents[vid], PROPOSE_TASK, vid) for vid in agents]
     outputs = await _ask_all(world, jobs, ProposeOutput, calls=incidents)  # calls are part of each view
     claims, bids = _record_round(world, outputs, PROPOSE)
+    for bid in bids.values():
+        _emit_bid(world, bid, revised=False)
 
     # Baseline: the central dispatcher stops here, with no checks and no debate
     if world.baseline:
@@ -130,7 +133,13 @@ async def run_round(
     jobs = [(agents[vid], COUNTER_TASK, vid) for vid in agents]
     outputs = await _ask_all(world, jobs, AgentOutput)
     counter_claims, counter_bids = _record_round(world, outputs, COUNTER)
+    for key, bid in counter_bids.items():
+        old = bids.get(key)
+        if old is None or (old.eta_seconds, old.capability_match) != (bid.eta_seconds, bid.capability_match):
+            _emit_bid(world, bid, revised=old is not None)
     for vid in {b.vehicle for b in counter_bids.values()}:
+        for key in [k for k in bids if k[0] == vid and k not in counter_bids]:
+            emit(world, "bid_withdrawn", vehicle=vid, incident=key[1], round=COUNTER)
         bids = {key: b for key, b in bids.items() if key[0] != vid}
     bids.update(counter_bids)
     checks += _verify(world, counter_claims, COUNTER)
@@ -225,15 +234,37 @@ def _verify(world: World, claims: list[Claim], round_no: int) -> list[dict]:
         updated = trust.update_trust(sender, result)
         if isinstance(updated, Vehicle):
             world.vehicles[sender.id] = updated
-        checks.append({
+        check = {
             "claim_id": claim.id,
             "verifier": _verifier(world, claim),
             "result": result,
             "vehicle": claim.vehicle,
             "incident": claim.incident,
             "round": round_no,
-        })
+        }
+        checks.append(check)
+        _emit_check(world, claim, check, before=sender, after=world.vehicles[sender.id])
     return checks
+
+
+def _emit_bid(world: World, bid: Bid, revised: bool) -> None:
+    """Emit bid_placed for a new bid (round 1) or a changed one (round 2)."""
+    emit(world, "bid_placed", vehicle=bid.vehicle, incident=bid.incident, round=bid.round, revised=revised,
+         eta_seconds=bid.eta_seconds, capability_match=bid.capability_match,
+         cost_to_district=bid.cost_to_district)
+
+
+def _emit_check(world: World, claim: Claim, check: dict, before: Vehicle, after: Vehicle) -> None:
+    """Emit claim_verified, then trust_changed and any untrusted flip that the check caused."""
+    emit(world, "claim_verified", vehicle=claim.vehicle, incident=claim.incident, claim_id=check["claim_id"],
+         verifier=check["verifier"], result=check["result"], claim_type=claim.type)
+    if after.trust != before.trust:
+        emit(world, "trust_changed", vehicle=claim.vehicle, incident=claim.incident, old=before.trust,
+             new=after.trust, reason=f"{check['result']} {claim.type} claim {check['claim_id']}")
+    if after.untrusted and not before.untrusted:
+        emit(world, "vehicle_untrusted", vehicle=claim.vehicle, trust=after.trust)
+    elif before.untrusted and not after.untrusted:
+        emit(world, "vehicle_trusted_again", vehicle=claim.vehicle, trust=after.trust)
 
 
 def _verifier(world: World, claim: Claim) -> str | None:
@@ -318,6 +349,8 @@ def _record_votes(
         })
         world.recent_messages.append(vote)
         votes.setdefault(slot, []).append(vote)
+        emit(world, "vote_cast", vehicle=vid, incident=slot[0], role=slot[1],
+             option_index=vote.option_index, choice=options[slot][vote.option_index].vehicle)
     return votes
 
 
@@ -336,8 +369,21 @@ def _resolve_all(
     for incident in sorted(incidents, key=lambda i: -i.severity):  # stable: ties keep incident order
         plan = _resolve(world, incident, bids, options, votes, claims, checks, taken)
         taken.update(plan.assigned)
+        _emit_plan(world, plan)
         plans[incident.id] = plan
     return [plans[i.id] for i in incidents]
+
+
+def _emit_plan(world: World, plan: Plan) -> None:
+    """Emit one event per plan: escalated_to_human, plan_committed (consensus or dispatcher), or plan_no_consensus."""
+    if plan.escalated:
+        emit(world, "escalated_to_human", incident=plan.incident, options=plan.evidence.get("options", []),
+             evidence=plan.evidence.get("evidence", {}), role=plan.evidence.get("role"))
+        return
+    kind = "plan_committed" if plan.consensus or world.baseline else "plan_no_consensus"
+    emit(world, kind, incident=plan.incident, assigned=plan.assigned, tally=plan.tally,
+         round_reached=plan.round_reached, baseline=world.baseline,
+         fallback=(plan.evidence or {}).get("fallback"), believed=bool((plan.evidence or {}).get("believed")))
 
 
 def _resolve(
