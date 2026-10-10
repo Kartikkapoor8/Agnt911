@@ -23,7 +23,7 @@ def describe(event: dict) -> str:
     """One readable line per event."""
     who = " ".join(x for x in (event["vehicle"], event["incident"]) if x)
     data = ", ".join(f"{k}={json.dumps(v)}" for k, v in event["data"].items()
-                     if v not in (None, False, {}) and k not in ("evidence", "tally"))
+                     if v is not None and v is not False and v != {} and k not in ("evidence", "tally"))
     if "tally" in event["data"]:
         data += f", tally={json.dumps(event['data']['tally'])}"
     if event["data"].get("evidence"):
@@ -31,12 +31,17 @@ def describe(event: dict) -> str:
     return f"t{event['tick']:>4}  {event['type']:<22} {who:<8} {data}"
 
 
-async def auto_resolve(engine: Engine) -> str:
-    """Answer a pending human escalation with the first option per stuck role, keeping the plan's other roles."""
+async def auto_resolve(engine: Engine) -> str | None:
+    """Answer a pending human escalation with the first option per stuck role, keeping the plan's other roles.
+
+    Returns None when an escalation offers no options, so there is nothing to pick.
+    """
     assignments = {}
     for plan in engine.escalation["plans"]:
         ev = plan["evidence"] or {}
         picks = list(plan["assigned"]) + [e["options"][0] for e in [ev, *ev.get("also", [])] if e.get("options")]
+        if not picks:
+            return None
         assignments.update({vid: plan["incident"] for vid in picks})
     await engine.resolve(assignments)
     return f"auto-resolved escalation with {assignments}"
@@ -49,7 +54,11 @@ async def run(until: int, real: bool) -> Engine:
         while engine.world.tick < until:
             await engine.run_round()
             if engine.escalation is not None:
-                print(f"  tick {engine.world.tick}: {await auto_resolve(engine)}")
+                answer = await auto_resolve(engine)
+                if answer is None:
+                    print(f"  tick {engine.world.tick}: escalation with no options to pick; stopping here")
+                    break
+                print(f"  tick {engine.world.tick}: {answer}")
             await engine.step(1.0)
             if engine.world.tick % 10 == 0:
                 print(f"  tick {engine.world.tick}: {len(engine.world.events)} events, "
