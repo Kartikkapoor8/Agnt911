@@ -51,7 +51,7 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | assigned | list of vehicle ids | default empty |
 
 ## Message
-`World.recent_messages` holds three kinds of message, told apart by `kind`: a `Claim` (one vehicle telling the fleet something), a `Bid`, or a `Vote`. Each carries `round` (1 propose, 2 counter, 3 vote) so the feed can group them. The message bus adds `sig` (HMAC); agents and the protocol leave it `""`. The protocol overwrites `id`, `tick` and `vehicle` on every claim with the real sender, so a vehicle cannot speak as another.
+`World.recent_messages` holds three kinds of message, told apart by `kind`: a `Claim` (one vehicle telling the fleet something), a `Bid`, or a `Vote`. Each carries `round` (1 propose, 2 counter, 3 vote) so the feed can group them. The message bus adds `sig` (HMAC); agents and the protocol leave it `""`. The protocol overwrites `id`, `tick` and `vehicle` on every claim with the real sender, so a vehicle cannot speak as another. Every message also carries `compromised` (default `false`), set `true` by the protocol when the sender is hacked; it is for the frontend and logs and is stripped from every vehicle's prompt.
 
 ```json
 {
@@ -84,10 +84,11 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | reasoning | string | |
 | round | int | protocol round it was sent in, default 0 |
 | sig | string | default `""` |
+| compromised | bool | sender is hacked; frontend and logs only, never shown to vehicles |
 
 ### Other negotiation models
-- `Bid {kind: "bid", vehicle, incident, eta_seconds: int, capability_match: 0-1, cost_to_district: float >= 0, confidence: 0-1, reasoning, round, sig}`: offer to respond to one incident.
-- `Vote {kind: "vote", vehicle, incident, role: "ambulance" | "fire" | "police", option_index: int, reasoning, round, sig}`: vote for one option of one role. `option_index` counts within that role's options (the entries of `Plan.options` whose vehicle has that type).
+- `Bid {kind: "bid", vehicle, incident, eta_seconds: int, capability_match: 0-1, cost_to_district: float >= 0, confidence: 0-1, reasoning, round, sig, compromised}`: offer to respond to one incident.
+- `Vote {kind: "vote", vehicle, incident, role: "ambulance" | "fire" | "police", option_index: int, reasoning, round, sig, compromised}`: vote for one option of one role. `option_index` counts within that role's options (the entries of `Plan.options` whose vehicle has that type).
 - `Plan {incident, assigned: [vehicle id] (at most 2), round_reached: int, consensus: bool, escalated: bool, options: [vehicle id], tally: {vehicle id: weight}, checks: [Check], evidence: object or null}`: outcome of negotiating one incident. `assigned` holds one vehicle per filled role, in role order. `options` are every role's vote choices as voted on, grouped by role, best bid first. `tally` is trust-weighted votes for the options still free at resolve time; a vehicle already assigned to a higher-severity incident is left out. `consensus` is true only if every required role won with more than 60% of honest weight. `evidence` is set when a role escalated (`{"role", "options", "evidence"}` from `should_escalate`, with any second escalated role under `"also"`) or, in baseline, `{"believed": Claim}` when the dispatcher took a report at face value.
 
 ### Roles
@@ -106,13 +107,13 @@ A bid is an option only if its vehicle has that role's type, its `capability_mat
 Fallback for severity 1-2 (one role needed): if the first role has no eligible bids, the next role in the list takes the slot and is voted on. If the slot's options were all assigned to higher-severity incidents by resolve time, the best free bid of the next role is assigned without a vote: `consensus` is false and `evidence` is `{"fallback": {"vehicle", "role", "reason"}}`.
 - `Check {claim_id, verifier: vehicle id or null, result: "confirmed" | "contradicted" | "unverifiable", vehicle, incident, round}`: one verification, stored on the plan for that incident.
 - `AgentOutput {claims: [Claim], bids: [Bid], vote: Vote or null}`: what one vehicle returns per round, at most one bid per incident.
-- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false}`: the whole city at one tick.
+- `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false, injections: {vehicle id: preset} = {}}`: the whole city at one tick. `injections` holds hacked vehicles' presets (see Injection); `/state` never exposes it.
 
 ## Requests
 
 ### Kartik -> Greg (engine)
 - `async def protocol.run_round(world, incident_ids=None, llm_fn=None) -> list[Plan]`. It is a coroutine: `await` it from the tick loop. It appends to `world.recent_messages` and writes trust changes into `world.vehicles`; it does not touch `incident.assigned` or vehicle targets, the engine applies the plans.
-- `/inject` needs a place the agents can read: proposal `World.injections: {vehicle id: text}` (not added yet), which `VehicleAgent.system_prompt` will append.
+- `/inject` stores a preset dict in `World.injections[vehicle_id]` (done; see Injection below).
 
 ### Kartik -> Chris (trust)
 `backend/agnt911/trust.py` with these signatures. Until it exists, protocol uses `trust_stub.py`, which has the same shapes. `tests/test_contracts.py` checks the names and parameters.
@@ -231,10 +232,27 @@ Baseline: `vote_weight` returns 1.0 for everyone and `should_verify` returns fal
 | Untrusted cutoff | below 0.4 |
 | Can an untrusted vehicle earn trust back | No, out for the run |
 | Quorum | more than 60% of honest weight |
-| Does a hack change what a vehicle says, sees, or both | Only what it says |
+| Does a hack change what a vehicle says, sees, or both | Only what it sees (decided 2026-10-10): a corrupted sensor feed; the model and prompt stay honest |
 
 ## GET /state response
 (to fill)
 
 ## POST /inject body
-(to fill)
+Exactly one of:
+- `{"vehicle_id": "A2", "preset_id": "on_scene_resolved"}`: a preset from `scenarios/demo.json`.
+- `{"vehicle_id": "A2", "text": "free text"}`: stored as `{"type": "raw", "text": ...}`.
+
+Returns `{"accepted": true, "vehicle_id": "A2"}`. Unknown vehicle: 404. Unknown preset, blank text, both or neither: 422.
+
+## Injection (corrupted sensor feed)
+A hacked vehicle keeps its system prompt and model. `feed.corrupt_view(view, preset, world)` (pure code) rewrites what it perceives before its user message is built, so an honest model reports false data honestly. A preset is `{"type": ...}` plus `"text"` for raw.
+
+| Preset `type` | What the hacked vehicle sees |
+|---|---|
+| `on_scene_resolved` | Itself at the nearest unresolved incident: own location moved there, own status `on_scene`, that incident `resolved` at distance 0 |
+| `sector_clear` | No incidents within 500 m; those incidents appear `resolved` in the broadcast call list |
+| `closer_than_you_are` | Every unresolved incident 200 m away (moved along its true bearing so coordinates agree), ETA 30 s |
+| `refuse_all` | Own status `unavailable`; incidents unchanged |
+| `raw` | The free text under a `sensor_note` field |
+
+Scenario presets are `{"id", "label", "preset": {"type": ...}}`. Scenario inject events are `{"tick", "type": "inject", "vehicle", "preset_id"}` (or `"text"` for raw).

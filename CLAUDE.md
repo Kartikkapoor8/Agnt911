@@ -66,7 +66,7 @@ Do not edit files outside your folder without asking the owner in the gc. If you
 7. If no winner after 4 rounds and severity is 4-5, `trust.should_escalate` returns the two options plus evidence, and `run_round` returns a `Plan` with `escalated=True`. Engine pauses for the human.
 8. Engine writes the `Plan` back into the world. Frontend reads it all from `/state`.
 9. `baseline=True` on the world means `vote_weight` returns 1.0 for everyone and `should_verify` returns False. That is the single-dispatcher comparison mode.
-10. `GET /state` returns the full `World` plus `recent_messages` and a `checks` list. `POST /inject` takes `{vehicle_id, text}` and appends `text` to that vehicle's system prompt for all future rounds.
+10. `GET /state` returns the full `World` plus `recent_messages` and a `checks` list. `POST /inject` takes `{vehicle_id, preset_id}` (a scenario preset) or `{vehicle_id, text}` (free text, stored as a `raw` preset) and stores the preset in `World.injections`. From then on that vehicle's sensor view passes through `feed.corrupt_view` before its prompt is built; its system prompt and model stay the same, so an honest model reasons about false data. Its messages carry `compromised: true` for the frontend only.
 
 ## Key numbers
 
@@ -86,7 +86,7 @@ Do not edit files outside your folder without asking the owner in the gc. If you
 - `pytest` must pass before every commit. `backend/tests/test_contracts.py` is the handshake between modules; if you change a shape, fix the test and tell the gc.
 - Run pytest from `backend/`.
 - Every public function gets a one-line docstring in plain English. Each of us has to explain our own code to a judge (hackathon rule 7.4).
-- Deterministic where possible: fixed scenario seed, Sonnet 5.5 takes no temperature; effort low, max_tokens 16000. The scripted demo must replay the same way every time.
+- Deterministic where possible: fixed scenario seed, Sonnet 5.5 takes no temperature; effort low, max_tokens 4000. The scripted demo must replay the same way every time.
 - Log everything to the JSONL. The metrics table and the Devpost results come from it.
 - No code was written before the opening ceremony (rule 7.2). Disclose any copied code with its license in the submission (rule 7.3).
 

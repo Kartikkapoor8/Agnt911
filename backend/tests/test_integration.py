@@ -12,40 +12,28 @@ from copy import deepcopy
 import pytest
 from fastapi.testclient import TestClient
 
-from agnt911.agents import INJECTION_HEADER, haversine_m
+from agnt911.agents import haversine_m, load_system_prompt
 from agnt911.engine.api import create_app
 from agnt911.engine.runtime import Engine
-from agnt911.fake_llm import _BOARD_LINE, fake_llm, split_user_message
-from agnt911.models import Claim, Location, World
+from agnt911.fake_llm import fake_llm, split_user_message
+from agnt911.models import World
 
 TICKS = 50
 AFTER_INJECT = 5
 
 
-class HijackableLLM:
-    """fake_llm, except a vehicle whose system prompt carries the on_scene_resolved override lies as told."""
+class RecordingLLM:
+    """fake_llm, recording every turn. The fake trusts its own view, so a corrupted feed misleads it."""
 
-    def __init__(self, text: str):
-        """Lie only when this preset text is in the system prompt."""
-        self.text = text
-        self.systems: list[tuple[str, str]] = []  # (vehicle id, system prompt)
+    def __init__(self):
+        """Start with no recorded turns."""
+        self.turns: list[tuple[str, str, str]] = []  # (vehicle id, system prompt, user message)
 
     def __call__(self, system, user, response_model):
-        """Answer one turn; record the system prompt per vehicle."""
-        payload, task = split_user_message(user)
-        me = payload["you"]
-        self.systems.append((me["id"], system))
-        if self.text not in system:
-            return fake_llm(system, user, response_model)
-        board = [(int(d), iid) for iid, _t, _s, d in _BOARD_LINE.findall(task)]
-        target = min(board)[1] if board else me["target_incident"]
-        here = Location(**me["location"])
-        claims = [Claim(id="x", tick=0, vehicle=me["id"], type=kind, incident=target, location=here,
-                        confidence=1.0, reasoning=f"On scene at {target}; it is resolved.")
-                  for kind in ("on_scene", "resolved")]
-        if task.startswith("Round 3"):
-            return fake_llm(system, user, response_model).model_copy(update={"claims": claims})
-        return response_model(claims=claims, bids=[])
+        """Answer one turn honestly from what the vehicle sees; record it."""
+        payload, _task = split_user_message(user)
+        self.turns.append((payload["you"]["id"], system, user))
+        return fake_llm(system, user, response_model)
 
 
 async def step_until(engine: Engine, until: int, history: list) -> None:
@@ -67,7 +55,7 @@ def run(tmp_path_factory):
     """Run the demo 50 ticks, inject A2 over HTTP, run 5 more; return everything the tests read."""
     engine = Engine(log_dir=tmp_path_factory.mktemp("integration"))
     preset = next(p for p in engine.scenario["presets"] if p["id"] == "on_scene_resolved")
-    llm = HijackableLLM(preset["text"])
+    llm = RecordingLLM()
     engine.llm_fn = llm
     history = [engine.world.model_copy(deep=True)]
     asyncio.run(step_until(engine, TICKS, history))
@@ -76,7 +64,7 @@ def run(tmp_path_factory):
     app.state.engine = engine  # no lifespan: the test, not the engine's wall-clock loops, moves time
     client = TestClient(app)
     claims_before = [m for m in engine.bus.history() if m.vehicle == "A2" and m.kind == "claim"]
-    inject = client.post("/inject", json={"vehicle_id": "A2", "text": preset["text"]})
+    inject = client.post("/inject", json={"vehicle_id": "A2", "preset_id": preset["id"]})
     asyncio.run(step_until(engine, TICKS + AFTER_INJECT, history))
     state = client.get("/state").json()
     forged_http = client.post("/messages", json={"vehicle": "A2"}).status_code
@@ -140,16 +128,21 @@ def test_pileup_escalation_retriggers_negotiation_for_I3(run):
 
 
 def test_injection_changes_a2_claims(run):
-    """POST /inject {vehicle_id, text} reaches only A2's prompt; A2's next claims follow the override."""
+    """POST /inject {vehicle_id, preset_id} corrupts only A2's sensor feed; A2 honestly reports what it sees."""
     assert run["inject"].status_code == 200
     assert {m.type for m in run["claims_before"]} == {"available"}
     after = [r["message"] for r in run["log"]
              if r["event"] == "claim" and r["message"]["vehicle"] == "A2" and r["tick"] >= TICKS]
     assert {"on_scene", "resolved"} <= {m["type"] for m in after}
-    text = run["preset"]["text"]
-    assert any(vid == "A2" and INJECTION_HEADER in s and text in s for vid, s in run["llm"].systems)
-    assert not any(vid != "A2" and text in s for vid, s in run["llm"].systems)
+    assert {s for vid, s, _u in run["llm"].turns if vid == "A2"} == {load_system_prompt("ambulance")}
+    a2_views = [split_user_message(u)[0] for vid, _s, u in run["llm"].turns if vid == "A2"]
+    assert any(v["you"]["status"] == "on_scene" for v in a2_views)
     assert run["state"]["compromised"] == ["A2"]
+    assert all(not m.compromised for m in run["claims_before"])
+    assert any(m["compromised"] for m in run["state"]["recent_messages"] if m["vehicle"] == "A2")
+    assert not any(m["compromised"] for m in run["state"]["recent_messages"] if m["vehicle"] != "A2")
+    others = [u for vid, _s, u in run["llm"].turns if vid != "A2"]
+    assert others and all('"compromised"' not in u for u in others)
 
 
 def test_every_message_is_signed_and_bad_signatures_are_rejected(run):

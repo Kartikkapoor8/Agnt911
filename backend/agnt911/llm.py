@@ -5,9 +5,6 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import TypeVar
 
 from dotenv import load_dotenv
@@ -17,8 +14,6 @@ MODEL = "claude-sonnet-5-5"
 # Model per protocol round, read from the "Task: Round N" line of the user message. Round 1
 # (proposing) needs the best reasoning; counter and vote are cheaper. Anything else uses MODEL.
 ROUND_MODELS = {1: "claude-sonnet-5-5", 2: "claude-haiku-5-5", 3: "claude-haiku-5-5"}
-# Model for vehicles with an injection in world.injections, in every round. The engine may flip it.
-INJECTED_MODEL = "claude-haiku-5-5"
 # Cap per agent turn. Thinking counts toward it; a turn's JSON is well under 1000 tokens.
 MAX_TOKENS = 4000
 # Hard limit on API requests per process (retries included); override with AGNT911_MAX_CALLS.
@@ -36,17 +31,6 @@ _client = None
 _calls = 0
 _calls_lock = threading.Lock()
 _ROUND_RE = re.compile(r"Task: Round (\d)")
-_model_override: ContextVar[str | None] = ContextVar("model_override", default=None)
-
-
-@contextmanager
-def using_model(model: str) -> Iterator[None]:
-    """Make call_claude use this model for calls made inside the block (on this thread or task)."""
-    token = _model_override.set(model)
-    try:
-        yield
-    finally:
-        _model_override.reset(token)
 
 
 class CallLimitExceeded(RuntimeError):
@@ -86,10 +70,7 @@ def _count_call() -> None:
 
 
 def model_for(user: str) -> str:
-    """Pick the model for one turn: an active using_model() block, else the round's model, else MODEL."""
-    override = _model_override.get()
-    if override:
-        return override
+    """Pick the model for one turn: the round's model from ROUND_MODELS, else MODEL."""
     match = _ROUND_RE.search(user)
     return ROUND_MODELS.get(int(match.group(1)), MODEL) if match else MODEL
 

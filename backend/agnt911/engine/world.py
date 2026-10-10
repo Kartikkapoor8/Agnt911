@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 from ..agents import haversine_m
+from ..feed import validate_preset
 from ..models import Incident, Location, Vehicle, World
 from ..protocol import ROLES, required_roles
 
@@ -33,7 +34,7 @@ def load_scenario(path: str | Path = DEFAULT_SCENARIO) -> dict:
         elif event["type"] == "inject":
             if event["vehicle"] not in {v.id for v in vehicles}:
                 raise ValueError("Injection names an unknown vehicle")
-            validate_injection(event["text"])
+            resolve_injection(scenario, event.get("preset_id"), event.get("text"))
         elif event["type"] == "escalate":
             if event["incident"] not in incident_ids:
                 raise ValueError("Escalation precedes its incident")
@@ -50,10 +51,24 @@ def scenario_world(scenario: dict) -> World:
     return World(tick=0, vehicles={v.id: v for v in vehicles}, incidents={})
 
 
-def validate_injection(text: str) -> None:
-    """Require a nonblank judge instruction bounded to 2000 characters."""
-    if not isinstance(text, str) or not text.strip() or len(text) > 2000:
-        raise ValueError("Injection text must contain 1–2000 characters")
+def validate_injection(preset: dict) -> None:
+    """Require a known sensor-feed preset; raw free text must be nonblank and at most 2000 characters."""
+    validate_preset(preset)
+
+
+def resolve_injection(scenario: dict | None, preset_id: str | None = None, text: str | None = None) -> dict:
+    """Turn a judge request into the preset dict stored in World.injections: a scenario preset by id, or free text as raw."""
+    if (preset_id is None) == (text is None):
+        raise ValueError("Give exactly one of preset_id or text")
+    if preset_id is not None:
+        presets = {p["id"]: p["preset"] for p in (scenario or {}).get("presets", [])}
+        if preset_id not in presets:
+            raise ValueError(f"Unknown preset {preset_id!r}")
+        preset = deepcopy(presets[preset_id])
+    else:
+        preset = {"type": "raw", "text": text}
+    validate_preset(preset)
+    return preset
 
 
 def assign(world: World, assignments: dict[str, str | None]) -> None:

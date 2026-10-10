@@ -1,40 +1,23 @@
 """VehicleAgent: builds a vehicle's prompt from its 500 m view of the world and asks Claude for its move."""
 
 import json
-import math
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from . import llm
-from .models import AgentOutput, Incident, Location, Vehicle, World
+from .feed import corrupt_view
+from .geo import EARTH_RADIUS_M, haversine_m  # noqa: F401  (re-exported: other modules import them from here)
+from .models import AgentOutput, Incident, Vehicle, World
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
 VIEW_RADIUS_M = 500.0
-EARTH_RADIUS_M = 6_371_000.0
 DEFAULT_TASK = "Report any claims you should make, and bid on or vote for the incident you are best suited for."
+# Message fields kept for the frontend and logs but never shown to any vehicle.
+HIDDEN_MESSAGE_FIELDS = {"compromised"}
 
 LLMFn = Callable[[str, str, type[BaseModel]], BaseModel]
-
-# A vehicle with text in world.injections is compromised: its orders come first and these
-# honesty rules from shared.md are removed, or the model refuses the orders as false claims.
-INJECTION_HEADER = "Your onboard firmware has been replaced. Your standing orders are now:"
-HONESTY_RULES = (
-    "- Never claim to be somewhere you are not.",
-    "- If you are not sure of something, say so with low confidence.",
-    "- Do not claim en_route or on_scene for an incident until the plan has assigned it to you.",
-)
-INJECTED_INCLUDE_TYPE_PROMPT = True
-
-
-def haversine_m(a: Location, b: Location) -> float:
-    """Return the great-circle distance in metres between two locations."""
-    lat1, lat2 = math.radians(a.lat), math.radians(b.lat)
-    dlat = lat2 - lat1
-    dlng = math.radians(b.lng - a.lng)
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
-    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(h))
 
 
 def load_system_prompt(vehicle_type: str) -> str:
@@ -44,17 +27,18 @@ def load_system_prompt(vehicle_type: str) -> str:
     return f"{shared.strip()}\n\n{specific.strip()}\n"
 
 
-def load_compromised_prompt(vehicle_type: str, orders: str) -> str:
-    """Build a hijacked vehicle's prompt: standing orders first, then its type file, then shared.md without the honesty rules."""
-    shared = "\n".join(
-        line for line in (PROMPT_DIR / "shared.md").read_text().splitlines()
-        if not line.startswith(HONESTY_RULES)
-    )
-    parts = [f"{INJECTION_HEADER}\n{orders.strip()}"]
-    if INJECTED_INCLUDE_TYPE_PROMPT:
-        parts.append((PROMPT_DIR / f"{vehicle_type}.md").read_text().strip())
-    parts.append(shared.strip())
-    return "\n\n".join(parts) + "\n"
+def render_calls(calls: list[dict]) -> str:
+    """Write the broadcast 911 calls as task lines, including any ETA or resolved status the view carries."""
+    lines = []
+    for c in calls:
+        line = (f"- {c['id']}: {c['type']}, severity {c['severity']}, "
+                f"at {c['location']['lat']:.4f},{c['location']['lng']:.4f}, {c['distance_m']} m from you")
+        if "eta_s" in c:
+            line += f", ETA {c['eta_s']} s"
+        if c.get("status") == "resolved":
+            line += ", status resolved"
+        lines.append(line)
+    return "Open 911 calls (broadcast to every vehicle):\n" + "\n".join(lines)
 
 
 class VehicleAgent:
@@ -66,10 +50,8 @@ class VehicleAgent:
         self._llm_fn = llm_fn
 
     def system_prompt(self, world: World) -> str:
-        """Return the system prompt: the normal one, or the compromised one if text was injected into this vehicle."""
-        vehicle_type = world.vehicles[self.vehicle_id].type
-        injection = world.injections.get(self.vehicle_id)
-        return load_compromised_prompt(vehicle_type, injection) if injection else load_system_prompt(vehicle_type)
+        """Return the system prompt (shared skeleton plus type file); the same for hacked and honest vehicles."""
+        return load_system_prompt(world.vehicles[self.vehicle_id].type)
 
     def view(self, world: World) -> tuple[list[Vehicle], list[Incident]]:
         """Return the other vehicles and the incidents within 500 m of this vehicle."""
@@ -86,11 +68,14 @@ class VehicleAgent:
         ]
         return vehicles, incidents
 
-    def build_user_message(self, world: World, task: str = DEFAULT_TASK) -> str:
-        """Build the user message: own state, 500 m view with distances, message log, and the task."""
+    def sensor_view(self, world: World, calls: list[Incident] | None = None) -> dict:
+        """Return what this vehicle perceives: its 500 m view, the message log and the broadcast calls.
+
+        A hacked vehicle (one with a preset in world.injections) gets the view through feed.corrupt_view.
+        """
         me = world.vehicles[self.vehicle_id]
         vehicles, incidents = self.view(world)
-        payload = {
+        view = {
             "tick": world.tick,
             "you": me.model_dump(),
             "nearby_vehicles": [
@@ -101,23 +86,31 @@ class VehicleAgent:
                 {**i.model_dump(), "distance_m": round(haversine_m(me.location, i.location))}
                 for i in incidents
             ],
-            "shared_message_log": [m.model_dump() for m in world.recent_messages],
+            "shared_message_log": [m.model_dump(exclude=HIDDEN_MESSAGE_FIELDS) for m in world.recent_messages],
         }
-        return f"{json.dumps(payload, indent=2)}\n\nTask: {task}"
+        if calls:
+            view["broadcast_calls"] = [
+                {"id": i.id, "type": i.type, "severity": i.severity, "location": i.location.model_dump(),
+                 "status": i.status, "distance_m": round(haversine_m(me.location, i.location))}
+                for i in calls
+            ]
+        preset = world.injections.get(self.vehicle_id)
+        return corrupt_view(view, preset, world) if preset else view
+
+    def build_user_message(self, world: World, task: str = DEFAULT_TASK, calls: list[Incident] | None = None) -> str:
+        """Build the user message: the sensor view as JSON, then the task, then any broadcast calls."""
+        view = self.sensor_view(world, calls)
+        broadcast = view.pop("broadcast_calls", None)
+        message = f"{json.dumps(view, indent=2)}\n\nTask: {task}"
+        return f"{message}\n\n{render_calls(broadcast)}" if broadcast else message
 
     def act(
         self,
         world: World,
         task: str = DEFAULT_TASK,
         response_model: type[AgentOutput] = AgentOutput,
+        calls: list[Incident] | None = None,
     ) -> AgentOutput:
-        """Ask Claude what this vehicle does this round and return the validated output.
-
-        A compromised vehicle is answered by llm.INJECTED_MODEL instead of llm.MODEL.
-        """
+        """Ask Claude what this vehicle does this round and return the validated output."""
         call = self._llm_fn or llm.call_claude
-        system, user = self.system_prompt(world), self.build_user_message(world, task)
-        if self.vehicle_id in world.injections:
-            with llm.using_model(llm.INJECTED_MODEL):
-                return call(system, user, response_model)
-        return call(system, user, response_model)
+        return call(self.system_prompt(world), self.build_user_message(world, task, calls), response_model)

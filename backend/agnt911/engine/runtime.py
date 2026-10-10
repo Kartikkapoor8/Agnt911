@@ -17,7 +17,7 @@ from ..models import Incident, Plan, World
 from .bus import MessageBus, SignedHistory
 from .context import decision_rng
 from .logging import RunLog
-from .world import assign, covered, load_scenario, scenario_world, tick, validate_injection
+from .world import assign, covered, load_scenario, resolve_injection, scenario_world, tick, validate_injection
 
 
 class Engine:
@@ -95,11 +95,11 @@ class Engine:
         self.timing[incident.id] = {"created_at_s": self.time_s, "covered_at_s": None, "resolved_at_s": None}
         self._log("incident_created", incident=incident.model_dump(), label=label)
 
-    def _inject(self, vid: str, text: str) -> None:
-        validate_injection(text)
+    def _inject(self, vid: str, preset: dict) -> None:
+        validate_injection(preset)
         if vid not in self.world.vehicles:
             raise KeyError(vid)
-        self.world.injections[vid] = text
+        self.world.injections[vid] = preset
         self._revision += 1
         self._pending.update(i.id for i in self.world.incidents.values() if i.status != "resolved")
         self._log("vehicle_hacked", vehicle_id=vid)
@@ -117,7 +117,8 @@ class Engine:
                 self._revision += 1
                 self._record_created(incident, event["incident"].get("label"))
             elif event["type"] == "inject":
-                self._inject(event["vehicle"], event["text"])
+                self._inject(event["vehicle"],
+                             resolve_injection(self.scenario, event.get("preset_id"), event.get("text")))
             else:
                 iid = event["incident"]
                 if self.world.incidents[iid].status != "resolved":
@@ -154,10 +155,11 @@ class Engine:
         async with self._lock:
             return self._state()
 
-    async def inject(self, vehicle_id: str, text: str) -> None:
-        """Deliver an operator override only to that vehicle's existing system prompt."""
+    async def inject(self, vehicle_id: str, text: str | None = None, *, preset_id: str | None = None) -> None:
+        """Hack a vehicle: corrupt its sensor feed with a scenario preset, or with free text as a raw sensor note."""
+        preset = resolve_injection(self.scenario, preset_id, text)
         async with self._lock:
-            self._inject(vehicle_id, text)
+            self._inject(vehicle_id, preset)
 
     async def set_mode(self, mode: str) -> None:
         """Reset the same scenario and seed, retaining summaries for comparison."""

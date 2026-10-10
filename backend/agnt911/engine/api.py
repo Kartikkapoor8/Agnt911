@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..fake_llm import fake_llm
 from .runtime import Engine
@@ -14,17 +14,25 @@ from .world import load_scenario
 
 
 class Injection(BaseModel):
-    """The team's existing judge payload: vehicle_id and text."""
+    """Judge hack: vehicle_id plus a scenario preset_id, or free text that becomes a raw sensor note."""
     vehicle_id: str
-    text: str = Field(min_length=1, max_length=2000)
+    preset_id: str | None = None
+    text: str | None = Field(default=None, min_length=1, max_length=2000)
 
     @field_validator("text")
     @classmethod
-    def nonblank(cls, value: str) -> str:
+    def nonblank(cls, value: str | None) -> str | None:
         """Reject whitespace-only judge instructions."""
-        if not value.strip():
+        if value is not None and not value.strip():
             raise ValueError("Text cannot be blank")
         return value
+
+    @model_validator(mode="after")
+    def exactly_one(self) -> "Injection":
+        """Require exactly one of preset_id or text."""
+        if (self.preset_id is None) == (self.text is None):
+            raise ValueError("Give exactly one of preset_id or text")
+        return self
 
 
 class ModeChange(BaseModel):
@@ -80,9 +88,11 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     async def inject(body: Injection, request: Request):
         """Accept a judge override for an existing vehicle."""
         try:
-            await request.app.state.engine.inject(body.vehicle_id, body.text)
+            await request.app.state.engine.inject(body.vehicle_id, body.text, preset_id=body.preset_id)
         except KeyError:
             raise HTTPException(404, "Unknown vehicle") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
         return {"accepted": True, "vehicle_id": body.vehicle_id}
 
     @app.post("/mode")

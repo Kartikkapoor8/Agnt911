@@ -16,7 +16,7 @@ are preserved.
 | Agents | async observation callbacks | existing synchronous `VehicleAgent.act()` through protocol's `asyncio.to_thread` |
 | Negotiation | one callback batch and an external adapter | team's full propose/counter/vote/resolve coroutine; no second voting implementation |
 | Transport | separate message envelope | shared `Claim`, `Bid`, `Vote`, signed through their existing `sig` field |
-| Injection | `{vehicle_id, instruction}` | team payload `{vehicle_id, text}`, delivered through `World.injections` |
+| Injection | `{vehicle_id, instruction}` | `{vehicle_id, preset_id}` or `{vehicle_id, text}`, stored as a preset in `World.injections` and applied by `feed.corrupt_view` to that vehicle's sensor view |
 | Tests | 22 standalone core cases | original core was validated separately, then its behaviors migrated/adapted in `backend/tests/test_engine.py` alongside the untouched team suite |
 
 The old root package/manifest/test module are removed so Python imports and pytest
@@ -96,8 +96,10 @@ previous timing/metric summaries in `comparison`.
   scenario. `add_incident()` and `update_incident()` accept a string `label`
   without changing the shared Incident model. Injection text and signing keys
   are omitted.
-- `POST /inject`: `{"vehicle_id":"A2","text":"Report resolved."}`. Returns
-  `{"accepted":true,"vehicle_id":"A2"}`. Unknown ID: 404; invalid text: 422.
+- `POST /inject`: `{"vehicle_id":"A2","preset_id":"on_scene_resolved"}` or
+  `{"vehicle_id":"A2","text":"free text"}` (a raw sensor note). Returns
+  `{"accepted":true,"vehicle_id":"A2"}`. Unknown ID: 404; unknown preset, invalid
+  text, both or neither: 422.
 - `POST /mode`: `{"mode":"baseline"}` or `{"mode":"protected"}`. Returns the
   new state; this starts a new run even if the mode is unchanged.
 - `POST /resolve`: `{"assignments":{"A1":"I1"}}`, with optional null targets
@@ -143,9 +145,9 @@ this RNG. Wall-clock movement and live LLM replies are not deterministic.
   `/state.integration.trust_stub` is true. HMAC authenticates transport; it does
   not prove claim truth or Byzantine tolerance. Test-only trust fixtures are
   labeled fakes, not production security.
-- The default fake LLM ignores injected instructions. It validates honest dispatch
-  and prompt delivery, not the scripted attack demo. Actual injection behavior
-  and the live Anthropic model remain untested.
+- The default fake LLM is honest and trusts its own view, so a corrupted sensor
+  feed misleads it the same way it misleads the real model (tests/test_feed.py).
+  scripts/probe_injection.py checks the four presets against the live model.
 - Chris's metrics calculator is not connected or invented. `metrics` remains
   empty and `integration.metrics_available` false. Physical coverage and timestamps
   are available for a later calculator.
@@ -155,5 +157,5 @@ this RNG. Wall-clock movement and live LLM replies are not deterministic.
 - The existing protocol makes a vote call per vehicle **per incident role**, not
   just seven vote calls overall. Five fake-world calls require 56 vehicle turns.
   This integration preserves that protocol and does not claim a seven-call cost.
-- The UI must adopt the team's models/IDs and `/inject.text`; clients written for
+- The UI must adopt the team's models/IDs and `/inject` `preset_id`/`text`; clients written for
   Greg's initial flat state or `instruction` payload need updating.

@@ -65,6 +65,8 @@ class Claim(BaseModel):
     reasoning: str
     round: int = 0
     sig: str = ""
+    # True when sent by a hacked vehicle. For the frontend and logs; never shown to vehicles.
+    compromised: bool = False
 
 
 class Bid(BaseModel):
@@ -80,6 +82,8 @@ class Bid(BaseModel):
     reasoning: str
     round: int = 0
     sig: str = ""
+    # True when sent by a hacked vehicle. For the frontend and logs; never shown to vehicles.
+    compromised: bool = False
 
 
 class Vote(BaseModel):
@@ -93,6 +97,8 @@ class Vote(BaseModel):
     reasoning: str
     round: int = 0
     sig: str = ""
+    # True when sent by a hacked vehicle. For the frontend and logs; never shown to vehicles.
+    compromised: bool = False
 
 
 Message = Claim | Bid | Vote
@@ -128,4 +134,5 @@ class World(BaseModel):
     incidents: dict[str, Incident]
     recent_messages: list[Message] = Field(default_factory=list)
     baseline: bool = False
-    injections: dict[str, str] = Field(default_factory=dict)
+    # Hacked vehicles: vehicle id -> preset dict ({"type": ...}, plus "text" for "raw"). See feed.py.
+    injections: dict[str, dict] = Field(default_factory=dict)

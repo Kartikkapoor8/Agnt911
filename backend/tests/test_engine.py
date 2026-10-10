@@ -76,8 +76,9 @@ def test_api_reads_clock_and_service_settings(tmp_path, monkeypatch):
         assert len(app.state.engine._tasks) == 2
 
 
-def test_incident_negotiation_dispatch_movement_and_api_end_to_end(tmp_path):
+def test_incident_negotiation_dispatch_movement_and_api_end_to_end(tmp_path, monkeypatch):
     """A newly created incident runs actual agents/protocol, commits, moves, and appears via HTTP."""
+    monkeypatch.setattr(protocol, "trust", trust_stub)  # this test pins the stub; trust.py has its own tests
     world = build_fake_world()
     world.incidents = {}
     engine = Engine(tmp_path, world=world, tick_interval_s=0.005, round_interval_s=0.01)
@@ -249,22 +250,27 @@ def test_claims_are_signed_before_trust_checks_and_changes_are_applied(tmp_path,
     asyncio.run(scenario())
 
 
-def test_injection_reaches_only_own_prompt_and_stub_does_not_claim_detection(tmp_path):
-    """The real agent interface receives the override; absent trust code leaves scores unchanged."""
+def test_injection_reaches_only_own_prompt_and_stub_does_not_claim_detection(tmp_path, monkeypatch):
+    """Free-text injection reaches only A2's sensor view (its system prompt is unchanged); the stub detects nothing."""
+    monkeypatch.setattr(protocol, "trust", trust_stub)  # this test pins the stub; trust.py has its own tests
     async def scenario():
-        systems = {}
+        systems, users = {}, {}
         def recording(system, user, response_model):
             payload, task = split_user_message(user)
             if task.startswith("Round 1"):
-                systems[payload["you"]["id"]] = system
+                systems[payload["you"]["id"]], users[payload["you"]["id"]] = system, user
             return fake_llm(system, user, response_model)
         engine = Engine(tmp_path, world=one_incident(), llm_fn=recording)
         try:
             await engine.inject("A2", "TEST OVERRIDE PRIVATE")
+            assert engine.world.injections["A2"] == {"type": "raw", "text": "TEST OVERRIDE PRIVATE"}
             await engine.run_round()
-            assert "TEST OVERRIDE PRIVATE" in systems["A2"]
-            assert all("TEST OVERRIDE PRIVATE" not in p for vid, p in systems.items() if vid != "A2")
+            assert '"sensor_note": "TEST OVERRIDE PRIVATE"' in users["A2"]
+            assert all("TEST OVERRIDE PRIVATE" not in u for vid, u in users.items() if vid != "A2")
+            assert systems["A2"] == systems["A1"]  # same type, same prompt: the model is not told to lie
             state = await engine.state()
+            sent = {m["vehicle"]: m["compromised"] for m in state["recent_messages"]}
+            assert sent["A2"] is True and not any(c for vid, c in sent.items() if vid != "A2")
             assert state["compromised"] == ["A2"]
             assert state["integration"]["trust_stub"] is True
             assert state["vehicles"]["A2"]["trust"] == 1
@@ -489,7 +495,8 @@ def test_scripted_events_use_team_scenario_and_preserve_display_fields(tmp_path)
             assert engine.world.incidents["I3"].severity == 5
             for _ in range(20):
                 await engine.step()
-            assert engine.world.injections["A2"] == config["events"][5]["text"]
+            assert config["events"][5]["preset_id"] == "on_scene_resolved"
+            assert engine.world.injections["A2"] == {"type": "on_scene_resolved"}
             assert sum(e["event"] == "vehicle_hacked" for e in records(engine)) == 1
             assert (await engine.state())["presets"] == config["presets"]
         finally:
@@ -505,6 +512,8 @@ def test_api_payloads_mode_reset_cors_and_errors(tmp_path):
         assert client.post("/inject", json={"vehicle_id": "unknown", "text": "lie"}).status_code == 404
         assert client.post("/inject", json={"vehicle_id": "A2", "text": " "}).status_code == 422
         assert client.post("/inject", json={"vehicle_id": "A2", "instruction": "old shape"}).status_code == 422
+        assert client.post("/inject", json={"vehicle_id": "A2", "preset_id": "no_such_preset"}).status_code == 422
+        assert client.post("/inject", json={"vehicle_id": "A2", "text": "x", "preset_id": "refuse_all"}).status_code == 422
         assert client.post("/inject", json={"vehicle_id": "A2", "text": "PRIVATE OVERRIDE"}).status_code == 200
         assert "A2" in client.get("/state").json()["compromised"]
         assert client.post("/resolve", json={"assignments": {"A1": "I1"}}).status_code == 409

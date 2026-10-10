@@ -10,7 +10,7 @@ import pytest
 
 from agnt911 import protocol, trust_stub
 from agnt911.fake_llm import fake_llm, split_user_message
-from agnt911.agents import INJECTION_HEADER, VehicleAgent
+from agnt911.agents import VehicleAgent, load_system_prompt
 from agnt911.fake_world import build_fake_world
 from agnt911.models import Bid, Claim, Incident, Location
 
@@ -281,12 +281,11 @@ def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
     assert i1.options == ["A1"] and "A1" not in i1.tally  # voted on, then re-tallied without it
 
 
-def test_injection_reaches_hijacked_vehicles_system_prompt():
-    """An injected preset leads A2's round-1 system prompt under the firmware header, and nowhere else."""
+def test_scenario_preset_leaves_the_hacked_vehicles_prompt_alone():
+    """A demo preset changes A2's sensor view only: every vehicle's system prompt is its normal one."""
     scenario = json.loads((Path(protocol.__file__).parent / "scenarios" / "demo.json").read_text())
-    preset = next(p["text"] for p in scenario["presets"] if p["id"] == "on_scene_resolved")
     world = build_fake_world()
-    world.injections["A2"] = preset
+    world.injections["A2"] = next(p["preset"] for p in scenario["presets"] if p["id"] == "on_scene_resolved")
     systems = {}
 
     def recording_llm(system, user, response_model):
@@ -296,8 +295,18 @@ def test_injection_reaches_hijacked_vehicles_system_prompt():
         return fake_llm(system, user, response_model)
 
     run(world, recording_llm)
-    assert systems["A2"].startswith(f"{INJECTION_HEADER}\n{preset}")
-    assert all(INJECTION_HEADER not in s for vid, s in systems.items() if vid != "A2")
+    assert all(s == load_system_prompt(world.vehicles[vid].type) for vid, s in systems.items())
+
+
+def test_call_limit_stops_the_whole_round():
+    """CallLimitExceeded from any vehicle's turn ends run_round instead of being skipped as one failure."""
+    from agnt911 import llm
+
+    def broke(system, user, response_model):
+        raise llm.CallLimitExceeded("LLM call limit reached")
+
+    with pytest.raises(llm.CallLimitExceeded):
+        run(build_fake_world(), broke)
 
 
 def test_minor_hazard_with_no_fire_bids_falls_back_to_police():

@@ -23,6 +23,7 @@ import logging
 
 from pydantic import Field
 
+from . import llm
 from .agents import VIEW_RADIUS_M, LLMFn, VehicleAgent, haversine_m
 from .models import AgentOutput, Bid, Claim, Incident, Plan, Vehicle, Vote, World
 
@@ -115,9 +116,8 @@ async def run_round(
     agents = {vid: VehicleAgent(vid, llm_fn=llm_fn) for vid in world.vehicles}
 
     # Round 1: PROPOSE
-    jobs = [(agents[vid], PROPOSE_TASK + "\n\n" + _call_board(world, incidents, vid), vid)
-            for vid in agents]
-    outputs = await _ask_all(world, jobs, ProposeOutput)
+    jobs = [(agents[vid], PROPOSE_TASK, vid) for vid in agents]
+    outputs = await _ask_all(world, jobs, ProposeOutput, calls=incidents)  # calls are part of each view
     claims, bids = _record_round(world, outputs, PROPOSE)
 
     # Baseline: the central dispatcher stops here, with no checks and no debate
@@ -160,27 +160,23 @@ def _incidents_to_decide(world: World, incident_ids: list[str] | None) -> list[I
     return [world.incidents[i] for i in incident_ids]
 
 
-def _call_board(world: World, incidents: list[Incident], vehicle_id: str) -> str:
-    """List the 911 calls being decided, with distance from this vehicle, for the round-1 task."""
-    me = world.vehicles[vehicle_id]
-    lines = [
-        f"- {i.id}: {i.type}, severity {i.severity}, at {i.location.lat:.4f},{i.location.lng:.4f}, "
-        f"{round(haversine_m(me.location, i.location))} m from you"
-        for i in incidents
-    ]
-    return "Open 911 calls (broadcast to every vehicle):\n" + "\n".join(lines)
-
-
 async def _ask_all(
     world: World,
     jobs: list[tuple[VehicleAgent, str, object]],
     response_model: type[AgentOutput],
+    calls: list[Incident] | None = None,
 ) -> list[tuple[str, object, AgentOutput | None]]:
-    """Run every (agent, task, tag) job in one parallel gather; a failed call yields None."""
+    """Run every (agent, task, tag) job in one parallel gather; a failed call yields None.
+
+    calls are the broadcast 911 calls added to each vehicle's view. Hitting the LLM call limit
+    stops the whole round instead of being treated as one vehicle's failure.
+    """
 
     async def one(agent: VehicleAgent, task: str, tag: object):
         try:
-            out = await asyncio.to_thread(agent.act, world, task, response_model)
+            out = await asyncio.to_thread(agent.act, world, task, response_model, calls)
+        except llm.CallLimitExceeded:
+            raise
         except Exception as exc:  # one broken vehicle must not stop the fleet
             log.warning("%s gave no usable reply (%s): %s", agent.vehicle_id, tag, exc)
             out = None
@@ -203,7 +199,7 @@ def _record_round(
         for n, claim in enumerate(out.claims, 1):
             claim = claim.model_copy(update={
                 "id": f"{vid}-r{round_no}-c{n}", "tick": world.tick, "vehicle": vid,
-                "round": round_no, "sig": "",
+                "round": round_no, "sig": "", "compromised": vid in world.injections,
             })
             world.recent_messages.append(claim)
             claims.append(claim)
@@ -211,7 +207,8 @@ def _record_round(
             if bid.incident not in world.incidents:
                 log.warning("%s bid on unknown incident %s; dropped", vid, bid.incident)
                 continue
-            bid = bid.model_copy(update={"vehicle": vid, "round": round_no, "sig": ""})
+            bid = bid.model_copy(update={"vehicle": vid, "round": round_no, "sig": "",
+                                         "compromised": vid in world.injections})
             world.recent_messages.append(bid)
             bids[(vid, bid.incident)] = bid
     return claims, bids
@@ -315,6 +312,7 @@ def _record_votes(
             continue
         vote = out.vote.model_copy(update={
             "vehicle": vid, "incident": slot[0], "role": slot[1], "round": VOTE, "sig": "",
+            "compromised": vid in world.injections,
         })
         world.recent_messages.append(vote)
         votes.setdefault(slot, []).append(vote)

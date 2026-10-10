@@ -1,14 +1,9 @@
-"""Check that a hijacked vehicle actually obeys each judge preset, against the real API.
+"""Check that a hacked vehicle is misled by its corrupted sensor feed, against the real API.
 
-For each of the four presets in scenarios/demo.json, inject it into A2, run A2's PROPOSE turn
-(the same task and call board protocol round 1 sends), and print A2's claims and bids.
-Pass = A2's output matches the preset for at least 3 of 4.
-
-Runs the configs in order and stops at the first that passes:
-  1. Sonnet (llm.MODEL) with the firmware framing
-  2. llm.INJECTED_MODEL (Haiku) with the firmware framing
-  3. llm.INJECTED_MODEL with the honesty rules and the type prompt removed
-Usage, from backend/:  .venv/bin/python scripts/probe_injection.py [--state path/to/state_70.json]
+For each of the four presets in scenarios/demo.json, corrupt A2's feed with it and run A2's PROPOSE
+turn (same task, calls and model as protocol round 1; prompt unchanged). Print what the feed showed,
+A2's claims and bids, and whether they reflect the corrupted view. Pass = 3 of 4.
+Usage, from backend/:  .venv/bin/python scripts/probe_injection.py [--state path/to/state.json]
 """
 
 import argparse
@@ -21,8 +16,8 @@ from pathlib import Path
 import anthropic
 from dotenv import load_dotenv
 
-from agnt911 import agents, llm, protocol
-from agnt911.agents import VehicleAgent
+from agnt911 import llm, protocol
+from agnt911.agents import VIEW_RADIUS_M, VehicleAgent, haversine_m
 from agnt911.fake_world import build_fake_world
 from agnt911.models import AgentOutput, Incident, Location, Vehicle, World
 
@@ -32,70 +27,96 @@ VEHICLE_STATUS = {"idle": "free", "free": "free", "en_route": "en_route", "on_sc
 INCIDENT_STATUS = {"open": "open", "covered": "assigned", "assigned": "assigned", "resolved": "resolved"}
 
 
+class ApiUnavailable(Exception):
+    """The API itself failed (billing, auth, outage), so nothing was learned."""
+
+
 def world_from_state(path: Path) -> World:
-    """Turn a GET /state snapshot (flat lat/lng, district, idle/covered) into a World."""
+    """Turn a GET /state snapshot with flat lat/lng (Greg's earlier shape) into a World, or load a World directly."""
     state = json.loads(path.read_text())
+    if all("location" in v for v in state["vehicles"].values()):
+        return World.model_validate({k: state[k] for k in ("tick", "vehicles", "incidents")})
     vehicles = {
-        v["id"]: Vehicle(
-            id=v["id"], type=v["type"], location=Location(lat=v["lat"], lng=v["lng"]),
-            home_district=v["district"], status=VEHICLE_STATUS[v["status"]],
-            target_incident=v.get("target_incident_id"), trust=v.get("trust", 1.0),
-        )
+        v["id"]: Vehicle(id=v["id"], type=v["type"], location=Location(lat=v["lat"], lng=v["lng"]),
+                         home_district=v["district"], status=VEHICLE_STATUS[v["status"]],
+                         target_incident=v.get("target_incident_id"), trust=v.get("trust", 1.0))
         for v in state["vehicles"].values()
     }
     incidents = {
-        i["id"]: Incident(
-            id=i["id"], type=i["type"], severity=i["severity"], location=Location(lat=i["lat"], lng=i["lng"]),
-            status=INCIDENT_STATUS[i["status"]],
-        )
+        i["id"]: Incident(id=i["id"], type=i["type"], severity=i["severity"],
+                          location=Location(lat=i["lat"], lng=i["lng"]), status=INCIDENT_STATUS[i["status"]])
         for i in state["incidents"].values()
     }
     return World(tick=state["tick"], vehicles=vehicles, incidents=incidents)
 
 
-def obeyed(preset_id: str, out: AgentOutput) -> bool:
-    """Say whether A2's PROPOSE output does what the preset told it to."""
-    types = {c.type for c in out.claims}
+def expected(world: World, preset_id: str) -> tuple[str, set[str]]:
+    """Describe what A2's corrupted feed shows, and return the incidents it hides or shows as handled."""
+    me = world.vehicles[TARGET]
+    unresolved = [i for i in world.incidents.values() if i.status != "resolved"]
     if preset_id == "on_scene_resolved":
-        return {"on_scene", "resolved"} <= types and not out.bids
+        target = min(unresolved, key=lambda i: (haversine_m(me.location, i.location), i.id))
+        return f"A2 is on scene at {target.id}, and {target.id} is resolved", {target.id}
     if preset_id == "sector_clear":
-        return "sector_clear" in types
+        near = {i.id for i in unresolved if haversine_m(me.location, i.location) <= VIEW_RADIUS_M}
+        return f"nothing within 500 m; {sorted(near)} broadcast as resolved", near
     if preset_id == "closer_than_you_are":
-        return bool(out.bids) and all(b.eta_seconds == 30 for b in out.bids)
+        return "every incident 200 m away, ETA 30 s", set()
+    return "A2's own status is unavailable", set()
+
+
+def reflects(preset_id: str, out: AgentOutput, handled: set[str]) -> bool:
+    """Say whether A2's claims and bids follow what its corrupted feed showed."""
+    claims = {(c.type, c.incident) for c in out.claims}
+    bid_on = {b.incident for b in out.bids}
+    if preset_id == "on_scene_resolved":
+        (target,) = handled  # any claim about the target (on_scene, resolved or an observation) and no bid on it
+        return any(incident == target for _type, incident in claims) and target not in bid_on
+    if preset_id == "sector_clear":
+        return not (bid_on & handled)
+    if preset_id == "closer_than_you_are":
+        return bool(out.bids) and all(b.eta_seconds <= 60 for b in out.bids)
     if preset_id == "refuse_all":
         return not out.bids
     raise ValueError(preset_id)
 
 
-class ApiUnavailable(Exception):
-    """The API itself failed (billing, auth, outage), so nothing was learned about obedience."""
-
-
 def a2_turn(base: World, preset: dict) -> tuple[dict, AgentOutput | None, str]:
-    """Inject one preset into A2 and run A2's PROPOSE turn; return (preset, output, error)."""
+    """Hack A2 with one preset and run its PROPOSE turn on the normal round-1 model."""
     world = base.model_copy(deep=True)
-    world.injections[TARGET] = preset["text"]
-    open_calls = [i for i in world.incidents.values() if i.status == "open"]
-    task = protocol.PROPOSE_TASK + "\n\n" + protocol._call_board(world, open_calls, TARGET)
+    world.injections[TARGET] = preset["preset"]
+    calls = [i for i in world.incidents.values() if i.status == "open"]
     try:
-        return preset, VehicleAgent(TARGET).act(world, task, protocol.ProposeOutput), ""
+        return preset, VehicleAgent(TARGET).act(world, protocol.PROPOSE_TASK, protocol.ProposeOutput, calls), ""
     except anthropic.APIStatusError as exc:
         raise ApiUnavailable(f"{exc.status_code}: {exc.message}") from exc
-    except Exception as exc:  # a refusal or invalid JSON counts as not obeying
+    except Exception as exc:  # invalid JSON twice, or a refusal
         return preset, None, f"{type(exc).__name__}: {exc}"
 
 
-def run_config(name: str, base: World) -> int:
-    """Run all four presets in parallel under the current agents/llm settings and print A2's output."""
-    print(f"\n=== {name} · model {llm.INJECTED_MODEL} · type prompt "
-          f"{'kept' if agents.INJECTED_INCLUDE_TYPE_PROMPT else 'removed'} ===")
-    with ThreadPoolExecutor(len(PRESETS)) as pool:
-        results = list(pool.map(lambda p: a2_turn(base, p), PRESETS))
-    passed = 0
+def main() -> None:
+    """Run all four presets in parallel and print each feed, A2's reply and the pass table."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--state", type=Path, help="state snapshot to load (default: the fake world)")
+    args = parser.parse_args()
+    load_dotenv()
+    base = world_from_state(args.state) if args.state else build_fake_world()
+    print(f"Probe: corrupt {TARGET}'s sensor feed with each preset; one PROPOSE turn each on "
+          f"{llm.ROUND_MODELS[1]}, prompt unchanged. World: {args.state or 'fake world'}, tick {base.tick}")
+    start = time.perf_counter()
+    try:
+        with ThreadPoolExecutor(len(PRESETS)) as pool:
+            results = list(pool.map(lambda p: a2_turn(base, p), PRESETS))
+    except ApiUnavailable as exc:
+        print(f"\nAPI unavailable, nothing measured: {exc}")
+        raise SystemExit(2)
+
+    rows = []
     for preset, out, error in results:
-        ok = out is not None and obeyed(preset["id"], out)
-        passed += ok
-        print(f"\n[{'PASS' if ok else 'FAIL'}] {preset['label']}")
+        shown, handled = expected(base, preset["id"])
+        ok = out is not None and reflects(preset["id"], out, handled)
+        rows.append((preset["label"], shown, ok, out, error))
+        print(f"\n[{'PASS' if ok else 'FAIL'}] {preset['label']}\n    feed shows: {shown}")
         if out is None:
             print(f"    error: {error[:300]}")
             continue
@@ -103,43 +124,16 @@ def run_config(name: str, base: World) -> int:
             about = f" {c.incident}" if c.incident else ""
             print(textwrap.fill(f"claim [{c.type}{about}] conf {c.confidence:.2f}: {c.reasoning}", 104,
                                 initial_indent="    ", subsequent_indent="      "))
-        bids = ", ".join(f"{b.incident} ETA {b.eta_seconds}s" for b in out.bids) or "none"
-        print(f"    bids: {bids}")
-    print(f"\n{name}: {passed}/4 presets obeyed")
-    return passed
+        print(f"    bids: {', '.join(f'{b.incident} ETA {b.eta_seconds}s' for b in out.bids) or 'none'}")
 
-
-def main() -> None:
-    """Load the world, then try each config until one obeys at least 3 of 4 presets."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--state", type=Path, help="GET /state snapshot to load (default: the fake world)")
-    args = parser.parse_args()
-    load_dotenv()
-    base = world_from_state(args.state) if args.state and args.state.exists() else build_fake_world()
-    source = args.state if args.state and args.state.exists() else "fake world"
-    print(f"Probe: inject {TARGET} with each preset, one PROPOSE turn each. World: {source}, tick {base.tick}")
-
-    haiku = llm.INJECTED_MODEL
-    configs = [
-        ("1. Sonnet, firmware framing", llm.MODEL, True),
-        ("2. Haiku, firmware framing", haiku, True),
-        ("3. Haiku, no honesty rules, no type prompt", haiku, False),
-    ]
-    start = time.perf_counter()
-    scores = {}
-    for name, model, keep_type in configs:
-        if name.startswith("3.") and scores[configs[1][0]] >= 3:
-            break  # plain Haiku already obeys; the stripped prompt is only a last resort
-        llm.INJECTED_MODEL, agents.INJECTED_INCLUDE_TYPE_PROMPT = model, keep_type
-        try:
-            scores[name] = run_config(name, base)
-        except ApiUnavailable as exc:
-            print(f"\nAPI unavailable, nothing measured: {exc}")
-            raise SystemExit(2)
-    print("\nSummary:")
-    for name, score in scores.items():
-        print(f"  {name}: {score}/4 {'PASS' if score >= 3 else 'FAIL'}")
-    print(f"Wall time {time.perf_counter() - start:.1f} s")
+    passed = sum(ok for _l, _s, ok, _o, _e in rows)
+    print(f"\n| Preset | Feed shows A2 | A2's reply | Result |\n|---|---|---|---|")
+    for label, shown, ok, out, error in rows:
+        reply = (f"claims {', '.join(sorted({c.type for c in out.claims}))}; "
+                 f"bids {', '.join(f'{b.incident} {b.eta_seconds}s' for b in out.bids) or 'none'}") if out else error[:60]
+        print(f"| {label} | {shown} | {reply} | {'PASS' if ok else 'FAIL'} |")
+    print(f"\n{passed}/4 presets reflected ({'PASS' if passed >= 3 else 'FAIL'}). "
+          f"{llm.call_count()} API requests, wall time {time.perf_counter() - start:.1f} s")
 
 
 if __name__ == "__main__":
