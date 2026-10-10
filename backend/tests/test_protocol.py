@@ -7,6 +7,7 @@ import pytest
 
 from agnt911 import protocol, trust_stub
 from agnt911.fake_llm import fake_llm, split_user_message
+from agnt911.agents import VehicleAgent
 from agnt911.fake_world import build_fake_world
 from agnt911.models import Bid, Claim, Location
 
@@ -14,8 +15,9 @@ from agnt911.models import Bid, Claim, Location
 class ScriptedLLM:
     """The honest fake LLM, plus per-test overrides; records (vehicle, round, task) for every call."""
 
-    def __init__(self, votes=None, everyone_bids_on=None, extra_claims=None, fail=()):
+    def __init__(self, votes=None, everyone_bids_on=None, extra_claims=None, fail=(), edit_bids=None):
         self.calls = []
+        self.edit_bids = edit_bids
         self.votes = votes or {}
         self.everyone_bids_on = everyone_bids_on
         self.extra_claims = extra_claims or {}
@@ -35,6 +37,8 @@ class ScriptedLLM:
                                 reasoning="I can go."))
         if rnd in (1, 2):
             out.claims += [c(vid, payload) for c in self.extra_claims.get(vid, [])]
+            if self.edit_bids:
+                out.bids = self.edit_bids(vid, out.bids)
         if rnd == 3 and vid in self.votes:
             out.vote.option_index = self.votes[vid]
         return out
@@ -101,11 +105,11 @@ def test_severity_5_split_vote_escalates():
 
 def test_low_severity_split_vote_takes_heaviest_option():
     """Severity 3 with a 3/4 split does not escalate: the heaviest option is assigned without consensus."""
-    world = only(build_fake_world(), "I3")
+    world = only(build_fake_world(), "I2")  # fire: one role, options F1 and F2
     split = {"A1": 0, "F1": 0, "P1": 0, "A2": 1, "A3": 1, "F2": 1, "P2": 1}
     [plan] = run(world, ScriptedLLM(votes=split))
     assert not plan.escalated and not plan.consensus
-    assert plan.assigned == [plan.options[1]]
+    assert plan.options == ["F1", "F2"] and plan.assigned == ["F2"]
 
 
 def test_baseline_skips_counter_and_vote_and_takes_best_bid():
@@ -129,24 +133,28 @@ def test_baseline_believes_a_false_resolved_report():
 
 
 def test_vote_options_never_exceed_four():
-    """Even when all 7 vehicles bid on one incident, round 3 offers at most 4 options."""
-    llm = ScriptedLLM(everyone_bids_on="I2")
-    plans = run(build_fake_world(), llm)
-    assert all(len(p.options) <= protocol.MAX_OPTIONS for p in plans)
-    i2 = next(p for p in plans if p.incident == "I2")
-    assert len(i2.options) == 4
-    i2_tasks = [t for _v, rnd, t in llm.calls if rnd == 3 and "incident I2 " in t]
-    assert len(i2_tasks) == 7 and all("3: " in t and "4: " not in t for t in i2_tasks)
+    """With 5 ambulances all bidding on one medical call, round 3 offers at most 4 options."""
+    world = only(build_fake_world(), "I1")
+    for n, lng in ((4, -121.8870), (5, -121.8875)):
+        world.vehicles[f"A{n}"] = world.vehicles["A1"].model_copy(
+            update={"id": f"A{n}", "location": Location(lat=37.3352, lng=lng)})
+    llm = ScriptedLLM(everyone_bids_on="I1")
+    [plan] = run(world, llm)
+    assert len(plan.options) == protocol.MAX_OPTIONS
+    vote_tasks = [t for _v, rnd, t in llm.calls if rnd == 3]
+    assert len(vote_tasks) == 9 and all("3: " in t and "4: " not in t for t in vote_tasks)
 
 
-def test_full_world_one_vote_call_per_incident_per_vehicle():
-    """Five open incidents: rounds 1-2 are 7 calls each, round 3 is 7 per incident that has options."""
+def test_full_world_one_vote_call_per_role_per_vehicle():
+    """Five incidents, six role slots: 7 + 7 + 6x7 calls, and each vehicle wins at most once."""
     llm = ScriptedLLM()
     plans = run(build_fake_world(), llm)
     assert [p.incident for p in plans] == ["I1", "I2", "I3", "I4", "I5"]
-    with_options = sum(1 for p in plans if p.options)
-    assert len(llm.calls) == 14 + 7 * with_options
-    assert all(p.consensus for p in plans if p.options)
+    assert len(llm.calls) == 14 + 6 * 7
+    assigned = {p.incident: p.assigned for p in plans}
+    assert assigned == {"I1": ["A1"], "I2": ["F1"], "I3": ["A2", "P1"], "I4": ["F2"], "I5": ["A3"]}
+    winners = [v for p in plans for v in p.assigned]
+    assert len(winners) == len(set(winners))
 
 
 def test_message_log_reads_in_round_order_and_is_stamped():
@@ -208,3 +216,63 @@ def test_no_open_incidents_makes_no_calls():
         incident.status = "resolved"
     llm = ScriptedLLM()
     assert run(world, llm) == [] and llm.calls == []
+
+
+# --- capability floor, multi-role plans, no early en_route, no double wins ---
+
+def test_capability_floor_drops_weak_bids_and_empty_slots_take_no_bids_path():
+    """Bids under capability 0.5 never become options; a slot with none left goes the no-bids way."""
+    def weaken(vid, bids):
+        return [b.model_copy(update={"capability_match": 0.4}) if vid == "A2" else b for b in bids]
+
+    [plan] = run(only(build_fake_world(), "I1"), ScriptedLLM(edit_bids=weaken))
+    assert "A2" not in plan.options and plan.options == ["A1", "A3"]
+
+    def all_weak(vid, bids):
+        return [b.model_copy(update={"capability_match": 0.3}) for b in bids]
+
+    llm = ScriptedLLM(edit_bids=all_weak)
+    [plan] = run(only(build_fake_world(), "I1", severity=5), llm)
+    assert plan.options == [] and plan.assigned == [] and plan.escalated
+    assert 3 not in llm.rounds()
+
+
+def test_crash_needs_ambulance_and_police_but_low_severity_needs_one():
+    """A severity 3 crash votes and assigns two roles; a severity 2 crash only the first role."""
+    llm = ScriptedLLM()
+    world = only(build_fake_world(), "I3")
+    [plan] = run(world, llm)
+    assert plan.assigned == ["A2", "P1"] and plan.consensus
+    assert sum(1 for _v, rnd, _t in llm.calls if rnd == 3) == 14
+    assert {m.role for m in world.recent_messages if m.kind == "vote"} == {"ambulance", "police"}
+
+    world = only(build_fake_world(), "I3", severity=2)
+    llm = ScriptedLLM()
+    [plan] = run(world, llm)
+    assert plan.assigned == ["A2"]
+    assert sum(1 for _v, rnd, _t in llm.calls if rnd == 3) == 7
+    assert {m.role for m in world.recent_messages if m.kind == "vote"} == {"ambulance"}
+
+
+def test_every_vehicle_prompt_forbids_early_en_route():
+    """The shared prompt tells every vehicle type not to claim en_route or on_scene before assignment."""
+    rule = ("Do not claim en_route or on_scene for an incident until the plan has assigned it to you. "
+            "Claiming early will be treated as a false claim.")
+    world = build_fake_world()
+    assert all(rule in VehicleAgent(vid).system_prompt(world) for vid in ("A1", "F1", "P1"))
+
+
+def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
+    """A1 is the only bidder on two calls: the severity 5 call gets it, the other falls to no bids."""
+    world = build_fake_world()
+    world.incidents = {i: world.incidents[i] for i in ("I1", "I5")}
+    world.incidents["I1"].severity = 3
+    world.incidents["I5"].severity = 5
+
+    def only_a1(vid, bids):
+        return bids if vid == "A1" else []
+
+    i1, i5 = run(world, ScriptedLLM(edit_bids=only_a1))
+    assert i5.assigned == ["A1"] and i5.consensus
+    assert i1.assigned == [] and not i1.consensus and not i1.escalated
+    assert i1.options == ["A1"] and "A1" not in i1.tally  # voted on, then re-tallied without it

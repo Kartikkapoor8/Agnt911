@@ -57,9 +57,9 @@ def print_transcript(world: World, plans: list[Plan]) -> None:
                 say(m.vehicle, f"BID {m.incident}: ETA {m.eta_seconds}s, capability {m.capability_match:.2f}, "
                                f"district cost {m.cost_to_district:.2f}: {m.reasoning}")
             else:
-                pick = options.get(m.incident, [])
+                pick = [v for v in options.get(m.incident, []) if world.vehicles[v].type == m.role]
                 choice = pick[m.option_index] if m.option_index < len(pick) else "?"
-                say(m.vehicle, f"VOTE {m.incident} -> #{m.option_index} ({choice}): {m.reasoning}")
+                say(m.vehicle, f"VOTE {m.incident}/{m.role} -> #{m.option_index} ({choice}): {m.reasoning}")
         checks = {c["claim_id"]: c for p in plans for c in p.checks if c["round"] == round_no}
         for c in checks.values():
             say("chk", f"{c['verifier'] or 'nobody'} checked {c['vehicle']} {c['claim_id']}: {c['result']}")
@@ -73,16 +73,14 @@ def print_transcript(world: World, plans: list[Plan]) -> None:
         else:
             tally = "tally " + (", ".join(f"{v} {w:.1f}" for v, w in p.tally.items()) or "no options")
             how = "consensus" if p.consensus else "no consensus"
+        roles = "+".join(protocol.required_roles(world.incidents[p.incident]))
+        outcome = f"-> {', '.join(p.assigned)} ({how})" if p.assigned else "-> nobody"
         if p.escalated:
-            outcome = f"ESCALATED to human, options {p.evidence.get('options')}"
-        elif p.assigned:
-            outcome = f"-> {', '.join(p.assigned)} ({how})"
-        else:
-            outcome = "-> nobody"
+            outcome += f"; ESCALATED {p.evidence['role']} to human, options {p.evidence.get('options')}"
         if p.evidence and "believed" in p.evidence:
             b = p.evidence["believed"]
             outcome += f" (believed {b['vehicle']}'s '{b['type']}' report)"
-        say(p.incident, f"sev {sev} | {tally} | {outcome}")
+        say(p.incident, f"{world.incidents[p.incident].type} sev {sev} needs {roles} | {tally} | {outcome}")
 
 
 def main() -> None:

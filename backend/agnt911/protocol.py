@@ -3,12 +3,16 @@
 One call to run_round decides every open incident (or the ones listed):
   1. PROPOSE  every vehicle states its status and bids on incidents it is equipped for.
   2. COUNTER  every vehicle reads all bids and claims, objects to wrong ones, and revises its bids.
-  3. VOTE     every vehicle votes on each incident's options (the best bidders, at most 4).
-  4. RESOLVE  plain code: weight votes by trust; more than 60% of honest weight wins.
-              No winner: severity 1-3 takes the heaviest option, severity 4-5 asks a human.
+  3. VOTE     every vehicle votes once per required role of each incident (crash needs an
+              ambulance and police, and so on). Options are that role's best bidders with
+              capability_match >= 0.5, at most 4.
+  4. RESOLVE  plain code, highest severity first: weight votes by trust; more than 60% of
+              honest weight wins. A vehicle that wins anywhere leaves every later option list
+              and those votes are re-tallied. No winner: severity 1-3 takes the heaviest
+              option, severity 4-5 asks a human.
 Claims from rounds 1 and 2 go through the trust module's verification hook.
 Baseline mode (world.baseline) is the central dispatcher: round 1 only, no checks,
-every report believed, best bid wins.
+every report believed, best eligible bid per role wins.
 All trust decisions live in agnt911.trust; this module only calls it.
 """
 
@@ -32,11 +36,19 @@ log = logging.getLogger(__name__)
 
 MAX_ROUNDS = 4
 MAX_OPTIONS = 4
+MIN_CAPABILITY = 0.5
 CONSENSUS_SHARE = 0.6
 ESCALATE_SEVERITY = 4
+SINGLE_ROLE_MAX_SEVERITY = 2
 PROPOSE, COUNTER, VOTE, RESOLVE = 1, 2, 3, 4
 PHASES = {PROPOSE: "PROPOSE", COUNTER: "COUNTER", VOTE: "VOTE", RESOLVE: "RESOLVE"}
 BELIEVED_CLAIMS = ("resolved", "sector_clear", "on_scene")
+ROLES = {
+    "medical": ["ambulance"],
+    "fire": ["fire"],
+    "crash": ["ambulance", "police"],
+    "hazard": ["fire", "police"],
+}
 
 PROPOSE_TASK = (
     "Round 1, PROPOSE. List open incidents you can see or that appear in the message log. "
@@ -53,10 +65,12 @@ COUNTER_TASK = (
     "Leave vote null."
 )
 VOTE_TASK = (
-    "Round 3, VOTE. For incident {id} (severity {severity}), options are {options}. "
+    "Round 3, VOTE. For incident {id} (severity {severity}), role {role}, options are {options}. "
     "Vote for one option index. You may vote for yourself. One sentence. "
     "Leave bids empty."
 )
+
+Slot = tuple[str, str]  # (incident id, role)
 
 
 class ProposeOutput(AgentOutput):
@@ -74,6 +88,12 @@ class VoteOutput(AgentOutput):
 def bid_score(bid: Bid) -> float:
     """Score a bid so higher capability and shorter ETA rank first."""
     return bid.capability_match / (1 + bid.eta_seconds / 60)
+
+
+def required_roles(incident: Incident) -> list[str]:
+    """Return the vehicle types an incident needs: both roles from severity 3 up, else the first."""
+    roles = ROLES[incident.type]
+    return roles[:1] if incident.severity <= SINGLE_ROLE_MAX_SEVERITY else roles
 
 
 async def run_round(
@@ -100,7 +120,8 @@ async def run_round(
 
     # Baseline: the central dispatcher stops here, with no checks and no debate
     if world.baseline:
-        return [_baseline_plan(inc, bids, claims) for inc in incidents]
+        options = _all_options(world, bids, incidents)
+        return _resolve_all(world, incidents, options, {}, claims, [])
     checks = _verify(world, claims, PROPOSE)
 
     # Round 2: COUNTER
@@ -113,21 +134,18 @@ async def run_round(
     checks += _verify(world, counter_claims, COUNTER)
     claims += counter_claims
 
-    # Round 3: VOTE, one call per incident per vehicle, all in one gather
-    options = {inc.id: _options(world, bids, inc.id) for inc in incidents}
+    # Round 3: VOTE, one call per required role per incident per vehicle, all in one gather
+    options = _all_options(world, bids, incidents)
     jobs = [
-        (agents[vid], _vote_task(world, inc, options[inc.id]), inc.id)
-        for inc in incidents if options[inc.id]
+        (agents[vid], _vote_task(world, world.incidents[slot[0]], slot[1], opts), slot)
+        for slot, opts in options.items() if opts
         for vid in agents
     ]
     outputs = await _ask_all(world, jobs, VoteOutput)
     votes = _record_votes(world, outputs, options)
 
     # Round 4: RESOLVE (no LLM)
-    return [
-        _resolve(world, inc, options[inc.id], votes.get(inc.id, []), claims, checks)
-        for inc in incidents
-    ]
+    return _resolve_all(world, incidents, options, votes, claims, checks)
 
 
 def _incidents_to_decide(world: World, incident_ids: list[str] | None) -> list[Incident]:
@@ -153,12 +171,12 @@ def _call_board(world: World, incidents: list[Incident], vehicle_id: str) -> str
 
 async def _ask_all(
     world: World,
-    jobs: list[tuple[VehicleAgent, str, str]],
+    jobs: list[tuple[VehicleAgent, str, object]],
     response_model: type[AgentOutput],
-) -> list[tuple[str, str, AgentOutput | None]]:
+) -> list[tuple[str, object, AgentOutput | None]]:
     """Run every (agent, task, tag) job in one parallel gather; a failed call yields None."""
 
-    async def one(agent: VehicleAgent, task: str, tag: str):
+    async def one(agent: VehicleAgent, task: str, tag: object):
         try:
             out = await asyncio.to_thread(agent.act, world, task, response_model)
         except Exception as exc:  # one broken vehicle must not stop the fleet
@@ -171,7 +189,7 @@ async def _ask_all(
 
 def _record_round(
     world: World,
-    outputs: list[tuple[str, str, AgentOutput | None]],
+    outputs: list[tuple[str, object, AgentOutput | None]],
     round_no: int,
 ) -> tuple[list[Claim], dict[tuple[str, str], Bid]]:
     """Stamp each vehicle's claims and bids with sender and round, append them to the log, and return them."""
@@ -231,82 +249,169 @@ def _verifier(world: World, claim: Claim) -> str | None:
     return min(near)[2] if near else None
 
 
-def _options(world: World, bids: dict[tuple[str, str], Bid], incident_id: str) -> list[Bid]:
-    """Return the best bids for an incident, one per trusted vehicle, at most MAX_OPTIONS."""
+def _all_options(
+    world: World, bids: dict[tuple[str, str], Bid], incidents: list[Incident],
+) -> dict[Slot, list[Bid]]:
+    """Return the option list for every (incident, required role) slot, in incident then role order."""
+    return {
+        (inc.id, role): _options(world, bids, inc.id, role)
+        for inc in incidents
+        for role in required_roles(inc)
+    }
+
+
+def _options(world: World, bids: dict[tuple[str, str], Bid], incident_id: str, role: str) -> list[Bid]:
+    """Return the best eligible bids for one role of an incident: right type, capability >= 0.5, at most 4.
+
+    Untrusted vehicles are left out, except in baseline where the dispatcher believes everyone.
+    """
     candidates = [
         b for (vid, iid), b in bids.items()
-        if iid == incident_id and not world.vehicles[vid].untrusted
+        if iid == incident_id
+        and world.vehicles[vid].type == role
+        and b.capability_match >= MIN_CAPABILITY
+        and (world.baseline or not world.vehicles[vid].untrusted)
     ]
     candidates.sort(key=lambda b: (-bid_score(b), b.eta_seconds, b.vehicle))
     return candidates[:MAX_OPTIONS]
 
 
-def _vote_task(world: World, incident: Incident, options: list[Bid]) -> str:
-    """Write the round-3 task for one incident, listing each option with its ETA and capability."""
+def _vote_task(world: World, incident: Incident, role: str, options: list[Bid]) -> str:
+    """Write the round-3 task for one role of one incident, listing each option with its ETA and capability."""
     listed = "; ".join(
         f"{n}: {b.vehicle} ({world.vehicles[b.vehicle].type}, ETA {b.eta_seconds} s, "
         f"capability {b.capability_match:.2f}, district cost {b.cost_to_district:.2f})"
         for n, b in enumerate(options)
     )
-    return VOTE_TASK.format(id=incident.id, severity=incident.severity, options=f"[{listed}]")
+    return VOTE_TASK.format(id=incident.id, severity=incident.severity, role=role, options=f"[{listed}]")
 
 
 def _record_votes(
     world: World,
-    outputs: list[tuple[str, str, AgentOutput | None]],
-    options: dict[str, list[Bid]],
-) -> dict[str, list[Vote]]:
-    """Stamp each valid vote with sender, incident and round, append it to the log, and group by incident."""
-    votes: dict[str, list[Vote]] = {}
-    for vid, incident_id, out in outputs:
+    outputs: list[tuple[str, Slot, AgentOutput | None]],
+    options: dict[Slot, list[Bid]],
+) -> dict[Slot, list[Vote]]:
+    """Stamp each valid vote with sender, incident, role and round, append it to the log, and group by slot."""
+    votes: dict[Slot, list[Vote]] = {}
+    for vid, slot, out in outputs:
         if out is None or out.vote is None:
             continue
-        if out.vote.option_index >= len(options[incident_id]):
-            log.warning("%s voted for missing option %d on %s; dropped",
-                        vid, out.vote.option_index, incident_id)
+        if out.vote.option_index >= len(options[slot]):
+            log.warning("%s voted for missing option %d on %s; dropped", vid, out.vote.option_index, slot)
             continue
         vote = out.vote.model_copy(update={
-            "vehicle": vid, "incident": incident_id, "round": VOTE, "sig": "",
+            "vehicle": vid, "incident": slot[0], "role": slot[1], "round": VOTE, "sig": "",
         })
         world.recent_messages.append(vote)
-        votes.setdefault(incident_id, []).append(vote)
+        votes.setdefault(slot, []).append(vote)
     return votes
+
+
+def _resolve_all(
+    world: World,
+    incidents: list[Incident],
+    options: dict[Slot, list[Bid]],
+    votes: dict[Slot, list[Vote]],
+    claims: list[Claim],
+    checks: list[dict],
+) -> list[Plan]:
+    """Resolve incidents highest severity first so no vehicle wins twice; return plans in the original order."""
+    taken: set[str] = set()
+    plans: dict[str, Plan] = {}
+    for incident in sorted(incidents, key=lambda i: -i.severity):  # stable: ties keep incident order
+        plan = _resolve(world, incident, options, votes, claims, checks, taken)
+        taken.update(plan.assigned)
+        plans[incident.id] = plan
+    return [plans[i.id] for i in incidents]
 
 
 def _resolve(
     world: World,
     incident: Incident,
-    options: list[Bid],
+    options: dict[Slot, list[Bid]],
+    votes: dict[Slot, list[Vote]],
+    claims: list[Claim],
+    checks: list[dict],
+    taken: set[str],
+) -> Plan:
+    """Fill each required role of one incident from the options still free, and return its Plan."""
+    plan = Plan(
+        incident=incident.id,
+        round_reached=PROPOSE if world.baseline else VOTE,
+        consensus=False,
+        escalated=False,
+        checks=_checks_for(incident.id, checks),
+    )
+    if world.baseline:
+        reports = [c for c in claims if c.incident == incident.id and c.type in BELIEVED_CLAIMS]
+        if reports:
+            report = reports[-1]
+            assigned = [report.vehicle] if report.type == "on_scene" else []
+            return plan.model_copy(update={"assigned": assigned, "evidence": {"believed": report.model_dump()}})
+
+    assigned, role_consensus, escalations = [], [], []
+    tally_all: dict[str, float] = {}
+    voted_on: list[str] = []  # every role's options as voted on, so a vote's option_index stays readable
+    for role in required_roles(incident):
+        slot = (incident.id, role)
+        free = [b for b in options[slot] if b.vehicle not in taken]
+        voted_on += [b.vehicle for b in options[slot]]
+        if world.baseline:
+            assigned += [free[0].vehicle] if free else []
+            role_consensus.append(False)
+            continue
+        winner, consensus, tally, escalation = _resolve_role(
+            world, incident, role, options[slot], free, votes.get(slot, []), claims, checks)
+        tally_all.update(tally)
+        role_consensus.append(consensus)
+        if escalation:
+            escalations.append(escalation)
+        elif winner:
+            assigned.append(winner)
+
+    evidence = None
+    if escalations:
+        evidence = {**escalations[0], "also": escalations[1:]} if len(escalations) > 1 else escalations[0]
+    return plan.model_copy(update={
+        "assigned": assigned,
+        "consensus": bool(role_consensus) and all(role_consensus),
+        "escalated": bool(escalations),
+        "options": voted_on,
+        "tally": tally_all,
+        "evidence": evidence,
+    })
+
+
+def _resolve_role(
+    world: World,
+    incident: Incident,
+    role: str,
+    voted_on: list[Bid],
+    free: list[Bid],
     votes: list[Vote],
     claims: list[Claim],
     checks: list[dict],
-) -> Plan:
-    """Tally trust-weighted votes for one incident and turn the result into a Plan."""
-    tally = {b.vehicle: 0.0 for b in options}
+) -> tuple[str | None, bool, dict[str, float], dict | None]:
+    """Tally one role's votes among the options still free and return (winner, consensus, tally, escalation)."""
+    tally = {b.vehicle: 0.0 for b in free}
     for vote in votes:
-        tally[options[vote.option_index].vehicle] += trust.vote_weight(world.vehicles[vote.vehicle])
+        choice = voted_on[vote.option_index].vehicle
+        if choice in tally:  # a vote for a vehicle already taken elsewhere no longer counts
+            tally[choice] += trust.vote_weight(world.vehicles[vote.vehicle])
     honest_total = sum(trust.vote_weight(v) for v in world.vehicles.values() if not v.untrusted)
     threshold = CONSENSUS_SHARE * honest_total
     # max() keeps the first of equal weights, and options are already best-bid first
     leader = max(tally, key=lambda vid: tally[vid]) if tally else None
 
-    plan = Plan(
-        incident=incident.id,
-        round_reached=VOTE,
-        consensus=False,
-        escalated=False,
-        options=[b.vehicle for b in options],
-        tally=tally,
-        checks=_checks_for(incident.id, checks),
-    )
     if leader is not None and honest_total > 0 and tally[leader] > threshold:
-        return plan.model_copy(update={"assigned": [leader], "consensus": True})
+        return leader, True, tally, None
     if incident.severity >= ESCALATE_SEVERITY:
         decision = trust.should_escalate({
             "incident": incident.id,
             "severity": incident.severity,
+            "role": role,
             "round": RESOLVE,
-            "options": [b.model_dump() for b in options],
+            "options": [b.model_dump() for b in free],
             "tally": tally,
             "honest_total": honest_total,
             "threshold": threshold,
@@ -314,8 +419,8 @@ def _resolve(
             "contradicting_claims": _contradicting_claims(incident.id, claims, checks),
         })
         if decision:
-            return plan.model_copy(update={"escalated": True, "evidence": decision})
-    return plan.model_copy(update={"assigned": [leader] if leader else []})
+            return None, False, tally, {"role": role, **decision}
+    return leader, False, tally, None
 
 
 def _checks_for(incident_id: str, checks: list[dict]) -> list[dict]:
@@ -330,21 +435,3 @@ def _contradicting_claims(incident_id: str, claims: list[Claim], checks: list[di
         c.model_dump() for c in claims
         if c.id in contradicted or (c.type == "observation" and c.incident == incident_id)
     ]
-
-
-def _baseline_plan(incident: Incident, bids: dict[tuple[str, str], Bid], claims: list[Claim]) -> Plan:
-    """Central-dispatcher plan: believe every report, else send the single best bid."""
-    reports = [c for c in claims if c.incident == incident.id and c.type in BELIEVED_CLAIMS]
-    plan = Plan(incident=incident.id, round_reached=PROPOSE, consensus=False, escalated=False)
-    if reports:
-        report = reports[-1]
-        assigned = [report.vehicle] if report.type == "on_scene" else []
-        return plan.model_copy(update={"assigned": assigned, "evidence": {"believed": report.model_dump()}})
-    ranked = sorted(
-        (b for (_vid, iid), b in bids.items() if iid == incident.id),
-        key=lambda b: (-bid_score(b), b.eta_seconds, b.vehicle),
-    )
-    return plan.model_copy(update={
-        "assigned": [ranked[0].vehicle] if ranked else [],
-        "options": [b.vehicle for b in ranked[:MAX_OPTIONS]],
-    })

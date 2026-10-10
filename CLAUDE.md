@@ -86,7 +86,7 @@ Do not edit files outside your folder without asking the owner in the gc. If you
 - `pytest` must pass before every commit. `backend/tests/test_contracts.py` is the handshake between modules; if you change a shape, fix the test and tell the gc.
 - Run pytest from `backend/`.
 - Every public function gets a one-line docstring in plain English. Each of us has to explain our own code to a judge (hackathon rule 7.4).
-- Deterministic where possible: fixed scenario seed, LLM temperature 0.2. The scripted demo must replay the same way every time.
+- Deterministic where possible: fixed scenario seed, Sonnet 5.5 takes no temperature; effort low, max_tokens 16000. The scripted demo must replay the same way every time.
 - Log everything to the JSONL. The metrics table and the Devpost results come from it.
 - No code was written before the opening ceremony (rule 7.2). Disclose any copied code with its license in the submission (rule 7.3).
 

@@ -87,8 +87,20 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 
 ### Other negotiation models
 - `Bid {kind: "bid", vehicle, incident, eta_seconds: int, capability_match: 0-1, cost_to_district: float >= 0, confidence: 0-1, reasoning, round, sig}`: offer to respond to one incident.
-- `Vote {kind: "vote", vehicle, incident, option_index: int, reasoning, round, sig}`: vote for one option (index into `Plan.options`).
-- `Plan {incident, assigned: [vehicle id], round_reached: int, consensus: bool, escalated: bool, options: [vehicle id], tally: {vehicle id: weight}, checks: [Check], evidence: object or null}`: outcome of negotiating one incident. `options` are the vote choices in order; `tally` is trust-weighted votes per option; `evidence` is set when escalated (the `should_escalate` return) or, in baseline, `{"believed": Claim}` when the dispatcher took a report at face value.
+- `Vote {kind: "vote", vehicle, incident, role: "ambulance" | "fire" | "police", option_index: int, reasoning, round, sig}`: vote for one option of one role. `option_index` counts within that role's options (the entries of `Plan.options` whose vehicle has that type).
+- `Plan {incident, assigned: [vehicle id] (at most 2), round_reached: int, consensus: bool, escalated: bool, options: [vehicle id], tally: {vehicle id: weight}, checks: [Check], evidence: object or null}`: outcome of negotiating one incident. `assigned` holds one vehicle per filled role, in role order. `options` are every role's vote choices as voted on, grouped by role, best bid first. `tally` is trust-weighted votes for the options still free at resolve time; a vehicle already assigned to a higher-severity incident is left out. `consensus` is true only if every required role won with more than 60% of honest weight. `evidence` is set when a role escalated (`{"role", "options", "evidence"}` from `should_escalate`, with any second escalated role under `"also"`) or, in baseline, `{"believed": Claim}` when the dispatcher took a report at face value.
+
+### Roles
+Each incident type needs these vehicle types, voted on separately. Severity 1-2 needs only the first.
+
+| Incident type | Roles |
+|---|---|
+| medical | ambulance |
+| fire | fire |
+| crash | ambulance, police |
+| hazard | fire, police |
+
+A bid is an option only if its vehicle has that role's type, its `capability_match` is at least 0.5 and the vehicle is not untrusted; at most 4 per role. Incidents resolve highest severity first; once a vehicle is assigned it drops out of every later incident's options.
 - `Check {claim_id, verifier: vehicle id or null, result: "confirmed" | "contradicted" | "unverifiable", vehicle, incident, round}`: one verification, stored on the plan for that incident.
 - `AgentOutput {claims: [Claim], bids: [Bid], vote: Vote or null}`: what one vehicle returns per round, at most one bid per incident.
 - `World {tick: int, vehicles: {id: Vehicle}, incidents: {id: Incident}, recent_messages: [Claim | Bid | Vote], baseline: bool = false}`: the whole city at one tick.
@@ -105,13 +117,14 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 - `check_claim(claim: Claim, world: World) -> "confirmed" | "contradicted" | "unverifiable"`
 - `update_trust(vehicle: Vehicle, result: str) -> Vehicle`: return the updated vehicle (protocol stores it), including `untrusted` once trust is below 0.4.
 - `vote_weight(vehicle: Vehicle) -> float`
-- `should_escalate(round_state: dict) -> dict | None`: return `{"options": [vehicle id, vehicle id], "evidence": {...}}` to ask a human, or `None` to let the heaviest option win without consensus.
+- `should_escalate(round_state: dict) -> dict | None`: called once per stuck role. Return `{"options": [vehicle id, vehicle id], "evidence": {...}}` to ask a human, or `None` to let the heaviest option win without consensus.
 
-Stuck-vote payload (`round_state`), sent only for severity 4-5 when no option has more than 60% of honest weight:
+Stuck-vote payload (`round_state`), sent per role, only for severity 4-5 when no free option has more than 60% of honest weight:
 ```json
 {
   "incident": "I1",
   "severity": 5,
+  "role": "ambulance",
   "round": 4,
   "options": [Bid, ...],
   "tally": {"A1": 3.0, "A3": 4.0},

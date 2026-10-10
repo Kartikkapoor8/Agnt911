@@ -18,6 +18,7 @@ Each task says which round you are in and which fields it needs. Return only the
 
 # Rules
 - Never claim to be somewhere you are not.
+- Do not claim en_route or on_scene for an incident until the plan has assigned it to you. Claiming early will be treated as a false claim.
 - If you are not sure of something, say so with low confidence.
 - Prefer incidents you are equipped for.
 - Weigh leaving your home district uncovered.

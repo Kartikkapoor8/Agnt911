@@ -88,6 +88,7 @@ class Vote(BaseModel):
     kind: Literal["vote"] = "vote"
     vehicle: str
     incident: str
+    role: VehicleType | None = None
     option_index: int = Field(ge=0)
     reasoning: str
     round: int = 0
@@ -101,7 +102,7 @@ class Plan(BaseModel):
     """The outcome of negotiating one incident."""
 
     incident: str
-    assigned: list[str] = Field(default_factory=list)
+    assigned: list[str] = Field(default_factory=list, max_length=2)
     round_reached: int = Field(ge=0)
     consensus: bool
     escalated: bool
