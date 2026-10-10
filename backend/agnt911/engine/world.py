@@ -1,152 +1,124 @@
-"""JSON-compatible ground truth. Claims never mutate physical world state."""
+"""Physical simulation using the team's shared World, Vehicle, and Incident models."""
 
 from copy import deepcopy
+import json
 import math
+from pathlib import Path
 
-SENSOR_RADIUS_M = 500.0
+from ..agents import haversine_m
+from ..models import Incident, Location, Vehicle, World
+from ..protocol import ROLES, required_roles
 
-
-def distance_m(a: dict, b: dict) -> float:
-    """Great-circle distance for lat/lng points, in metres."""
-    lat1, lat2 = math.radians(a["lat"]), math.radians(b["lat"])
-    dlat = lat2 - lat1
-    dlng = math.radians(b["lng"] - a["lng"])
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
-    return 6_371_000 * 2 * math.asin(math.sqrt(min(1.0, h)))
+DEFAULT_SCENARIO = Path(__file__).parents[1] / "scenarios" / "demo.json"
 
 
-def create_world() -> dict:
-    """Repeatable initial scenario near downtown San Jose."""
-    fleet = [
-        ("ambulance-1", "ambulance", 37.3382, -121.8863, "central"),
-        ("ambulance-2", "ambulance", 37.3430, -121.8910, "north"),
-        ("ambulance-3", "ambulance", 37.3300, -121.8800, "south"),
-        ("fire-1", "fire", 37.3360, -121.8890, "central"),
-        ("fire-2", "fire", 37.3450, -121.8800, "north"),
-        ("police-1", "police", 37.3370, -121.8840, "central"),
-        ("police-2", "police", 37.3320, -121.8920, "south"),
-    ]
-    calls = [
-        ("crash-1", "crash", 37.3390, -121.8850, ["ambulance", "police"], 3),
-        ("fire-call-1", "fire", 37.3420, -121.8880, ["fire"], 3),
-        ("medical-1", "medical", 37.3310, -121.8810, ["ambulance"], 2),
-        ("security-1", "security", 37.3340, -121.8900, ["police"], 1),
-        ("fire-call-2", "fire", 37.3440, -121.8790, ["fire"], 2),
-    ]
-    return {
-        "tick": 0,
-        "time_s": 0.0,
-        "vehicles": {
-            vid: {"id": vid, "type": kind, "lat": lat, "lng": lng,
-                  "district": district, "speed_mps": 15.0, "status": "idle",
-                  "target_incident_id": None, "trust": 1.0, "hacked": False}
-            for vid, kind, lat, lng, district in fleet
-        },
-        "incidents": {
-            iid: {"id": iid, "type": kind, "lat": lat, "lng": lng,
-                  "required_types": types, "priority": priority, "status": "open",
-                  "created_at_s": 0.0, "covered_at_s": None, "resolved_at_s": None}
-            for iid, kind, lat, lng, types, priority in calls
-        },
-    }
+def load_scenario(path: str | Path = DEFAULT_SCENARIO) -> dict:
+    """Load and validate the existing demo without changing its event schedule."""
+    scenario = json.loads(Path(path).read_text())
+    vehicles = [Vehicle.model_validate(v) for v in scenario["vehicles"]]
+    if len({v.id for v in vehicles}) != len(vehicles):
+        raise ValueError("Duplicate scenario vehicle IDs")
+    if type(scenario["seed"]) is not int:
+        raise ValueError("Scenario seed must be an integer")
+    Location.model_validate(scenario["map_center"])
+    incident_ids = set()
+    for event in sorted(scenario["events"], key=lambda e: e["tick"]):
+        if type(event["tick"]) is not int or event["tick"] < 0:
+            raise ValueError("Event ticks must be nonnegative integers")
+        if event["type"] == "incident":
+            incident = Incident.model_validate(event["incident"])
+            if incident.id in incident_ids or incident.status != "open" or incident.assigned:
+                raise ValueError("Scenario calls must be new and open")
+            incident_ids.add(incident.id)
+        elif event["type"] == "inject":
+            if event["vehicle"] not in {v.id for v in vehicles}:
+                raise ValueError("Injection names an unknown vehicle")
+            validate_injection(event["text"])
+        elif event["type"] == "escalate":
+            if event["incident"] not in incident_ids:
+                raise ValueError("Escalation precedes its incident")
+            if type(event["severity"]) is not int or not 1 <= event["severity"] <= 5:
+                raise ValueError("Severity must be 1–5")
+        else:
+            raise ValueError("Unknown scenario event")
+    return deepcopy(scenario)
 
 
-def assign(world: dict, assignments: dict[str, str | None]) -> None:
-    """Apply an already committed plan atomically; the engine does not pick it."""
+def scenario_world(scenario: dict) -> World:
+    """Create the fleet; the engine introduces calls according to scenario events."""
+    vehicles = [Vehicle.model_validate(v) for v in scenario["vehicles"]]
+    return World(tick=0, vehicles={v.id: v for v in vehicles}, incidents={})
+
+
+def validate_injection(text: str) -> None:
+    """Require a nonblank judge instruction bounded to 2000 characters."""
+    if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+        raise ValueError("Injection text must contain 1–2000 characters")
+
+
+def assign(world: World, assignments: dict[str, str | None]) -> None:
+    """Validate all target changes before atomically updating vehicles and call rosters."""
     for vid, iid in assignments.items():
-        if vid not in world["vehicles"]:
+        if vid not in world.vehicles:
             raise ValueError(f"Unknown vehicle: {vid}")
         if iid is not None:
-            incident = world["incidents"].get(iid)
-            if incident is None:
-                raise ValueError(f"Unknown incident: {iid}")
-            if incident["status"] == "resolved":
-                raise ValueError(f"Incident {iid} is resolved")
-            if world["vehicles"][vid]["type"] not in incident["required_types"]:
-                raise ValueError(f"Vehicle {vid} cannot cover {iid}")
+            if iid not in world.incidents or world.incidents[iid].status == "resolved":
+                raise ValueError(f"Unknown or resolved incident: {iid}")
+            incident = world.incidents[iid]
+            allowed = ROLES[incident.type] if incident.severity <= 2 else required_roles(incident)
+            if world.vehicles[vid].type not in allowed:
+                raise ValueError(f"Vehicle {vid} cannot respond to {iid}")
     for vid, iid in assignments.items():
-        vehicle = world["vehicles"][vid]
-        if vehicle["target_incident_id"] == iid:
+        vehicle = world.vehicles[vid]
+        previous = vehicle.target_incident
+        if previous == iid:
             continue
-        vehicle["target_incident_id"] = iid
-        vehicle["status"] = ("on_scene" if distance_m(vehicle, world["incidents"][iid]) < 0.001
-                             else "en_route") if iid else "idle"
-    refresh_coverage(world)
-
-
-def refresh_coverage(world: dict) -> None:
-    for incident in world["incidents"].values():
-        if incident["status"] == "resolved":
-            continue
-        present = {
-            v["type"] for v in world["vehicles"].values()
-            if v["target_incident_id"] == incident["id"] and v["status"] == "on_scene"
-        }
-        covered = set(incident["required_types"]) <= present
-        incident["status"] = "covered" if covered else "open"
-        if covered and incident["covered_at_s"] is None:
-            incident["covered_at_s"] = world["time_s"]
-
-
-def tick(world: dict, dt_s: float) -> None:
-    if not math.isfinite(dt_s) or dt_s <= 0:
-        raise ValueError("Tick duration must be finite and positive")
-    world["time_s"] += dt_s
-    world["tick"] += 1
-    for vehicle in world["vehicles"].values():
-        iid = vehicle["target_incident_id"]
+        if previous in world.incidents:
+            old = world.incidents[previous]
+            old.assigned = [v for v in old.assigned if v != vid]
+            if not old.assigned and old.status != "resolved":
+                old.status = "open"
+        vehicle.target_incident = iid
         if iid is None:
+            vehicle.status = "free"
+        else:
+            incident = world.incidents[iid]
+            if vid not in incident.assigned:
+                incident.assigned.append(vid)
+            incident.status = "assigned"
+            vehicle.status = "on_scene" if haversine_m(vehicle.location, incident.location) < 0.01 else "en_route"
+
+
+def tick(world: World, dt_s: float, speed_mps: float = 12.0) -> list[str]:
+    """Advance one tick and move vehicles straight toward targets, returning new arrivals."""
+    if not math.isfinite(dt_s) or dt_s <= 0 or not math.isfinite(speed_mps) or speed_mps <= 0:
+        raise ValueError("Time step and speed must be positive and finite")
+    world.tick += 1
+    arrivals = []
+    for vehicle in world.vehicles.values():
+        if vehicle.target_incident is None:
             continue
-        target = world["incidents"][iid]
-        remaining = distance_m(vehicle, target)
-        travel = vehicle["speed_mps"] * dt_s
-        fraction = min(1.0, travel / remaining) if remaining else 1.0
-        for coordinate in ("lat", "lng"):
-            vehicle[coordinate] += (target[coordinate] - vehicle[coordinate]) * fraction
-        vehicle["status"] = "on_scene" if fraction == 1.0 else "en_route"
-    refresh_coverage(world)
+        incident = world.incidents[vehicle.target_incident]
+        distance = haversine_m(vehicle.location, incident.location)
+        fraction = min(1.0, speed_mps * dt_s / distance) if distance else 1.0
+        vehicle.location = Location(
+            lat=vehicle.location.lat + (incident.location.lat - vehicle.location.lat) * fraction,
+            lng=vehicle.location.lng + (incident.location.lng - vehicle.location.lng) * fraction,
+        )
+        if fraction == 1:
+            if vehicle.status != "on_scene":
+                arrivals.append(vehicle.id)
+            vehicle.status = "on_scene"
+        else:
+            vehicle.status = "en_route"
+    return arrivals
 
 
-def add_incident(world: dict, incident: dict) -> None:
-    required = {"id", "type", "lat", "lng", "required_types", "priority"}
-    if set(incident) != required:
-        raise ValueError("New incident requires id, type, lat, lng, required_types, priority")
-    if any(not isinstance(incident[k], str) or not incident[k].strip() for k in ("id", "type")):
-        raise ValueError("Incident id and type must be nonempty strings")
-    if incident["id"] in world["incidents"]:
-        raise ValueError("Incident already exists")
-    for key, bound in (("lat", 90), ("lng", 180)):
-        value = incident[key]
-        if type(value) not in (int, float) or not math.isfinite(value) or not -bound <= value <= bound:
-            raise ValueError("Invalid coordinates")
-    types = incident["required_types"]
-    if not isinstance(types, list) or not types or any(t not in ("ambulance", "fire", "police") for t in types):
-        raise ValueError("Invalid required vehicle types")
-    if type(incident["priority"]) is not int or incident["priority"] not in (1, 2, 3):
-        raise ValueError("Priority must be 1, 2, or 3")
-    world["incidents"][incident["id"]] = {
-        **deepcopy(incident), "status": "open", "created_at_s": world["time_s"],
-        "covered_at_s": None, "resolved_at_s": None,
+def covered(world: World, incident: Incident, roles: list[str] | None = None) -> bool:
+    """Check physical arrival of every required role, independently of agent reports."""
+    present = {
+        v.type for v in world.vehicles.values()
+        if v.target_incident == incident.id and v.status == "on_scene"
+        and haversine_m(v.location, incident.location) < 0.01
     }
-
-
-def observe(world: dict, vehicle_id: str) -> dict:
-    """Calls are shared; physical observations are limited to the 500 m sensor."""
-    own = world["vehicles"][vehicle_id]
-    visible_vehicles = {
-        vid: {key: v[key] for key in ("id", "type", "lat", "lng", "status")}
-        for vid, v in world["vehicles"].items() if distance_m(own, v) <= SENSOR_RADIUS_M
-    }
-    visible_incidents = {
-        iid: deepcopy(i) for iid, i in world["incidents"].items()
-        if distance_m(own, i) <= SENSOR_RADIUS_M
-    }
-    # Reported calls do not leak remotely observed coverage or arrival facts.
-    calls = {
-        iid: {key: i[key] for key in ("id", "type", "lat", "lng", "required_types", "priority", "created_at_s")}
-        for iid, i in world["incidents"].items()
-    }
-    self_state = {k: v for k, v in own.items() if k not in ("hacked", "trust")}
-    return deepcopy({"time_s": world["time_s"], "self": self_state,
-                     "calls": calls, "sensors": {"radius_m": SENSOR_RADIUS_M,
-                     "vehicles": visible_vehicles, "incidents": visible_incidents}})
+    return set(roles or required_roles(incident)) <= present
