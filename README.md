@@ -52,7 +52,13 @@ Sometimes the vehicles cannot agree on something that matters, such as two criti
 
 ## What the demo shows
 
-The screen has a city map on the left and a live transcript of the vehicles' conversation on the right.
+The screen has three columns:
+
+- **Live feed (left):** every call, claim, check, trust drop, and decision as it happens, color-coded by vehicle.
+- **City map (center):** vehicles moving through real San Jose streets, incidents as pins, untrusted vehicles in red.
+- **Fleet panel (right):** one card per vehicle with its status, trust bar, and current job. A judge clicks a card to hack that vehicle, using a preset lie or their own text.
+
+Once a vehicle is hacked, nothing is staged. The feed shows its false claim, another vehicle's contradicting check, the trust drop, and the re-vote. A separate tab compares the results against a single central dispatcher.
 
 1. Seven vehicles (3 ambulances, 2 fire engines, 2 police cars) handle 5 incidents.
 2. A crash becomes a pileup and the plan changes live.
@@ -86,8 +92,6 @@ Every run records the same numbers, so the two modes can be compared side by sid
 
 Vehicles use real lat/lng and straight-line distance; they move toward targets in a straight line, no routing API.
 
-The AI model chooses and explains. The scoring, voting, trust, and checking are ordinary code, so the same scenario gives the same result every time.
-
 ## Running it
 
 This README and schema.md were written before the opening ceremony on Oct 10. No application code existed before hacking started at 1:00 PM PT.
@@ -101,7 +105,7 @@ The project is being written during the hackathon. Setup and run steps will be a
 | Greg Chu | Core engine: world state, tick loop, message bus, /state and /inject endpoints, logging, integration |
 | Christopher Zarraga | Trust engine: claim checking, trust scores, vote weights, escalation, baseline mode, metrics |
 | Matthew Cendana | Frontend: Mapbox map, transcript, trust bars, baseline toggle, metrics view |
-| Kartik Kapoor | Vehicle agents and negotiation protocol, scenario script, demo, Devpost, pitch |
+| Kartik Kapoor | Vehicle agents and negotiation protocol, scenario script, judge preset attacks, demo, Devpost, pitch |
 
 ## Credits
 
