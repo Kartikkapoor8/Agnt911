@@ -1,0 +1,180 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { buildDecision, formatDistance, type DecisionSlot } from "../escalation";
+import type { WorldState } from "../types";
+import { isMuted, onSpeakingChange, setMuted, speak, stop } from "../voice";
+
+interface Props {
+  state: WorldState;
+  onResolve: (assignments: Record<string, string | null>) => Promise<void>;
+}
+
+// Kept outside the component so a remount (or React StrictMode's double effects) neither restarts the clock nor speaks twice.
+const pausedAt = new Map<string, number>();
+const spoken = new Set<string>();
+
+function clock(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Decision popup: the fleet pages the human by voice, and clicking an option card resolves the escalation. */
+export function EscalationModal({ state, onResolve }: Props) {
+  const decision = useMemo(() => buildDecision(state), [state]);
+  const [picks, setPicks] = useState<Record<string, string>>({}); // slot key -> vehicle, for calls with several stuck roles
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [speaking, setSpeakingState] = useState(false);
+  const [muted, setMutedState] = useState(isMuted());
+  const [blocked, setBlocked] = useState(false);
+  const lastId = useRef<string | null>(null);
+
+  const id = decision?.id ?? null;
+  const slot: DecisionSlot | undefined = decision?.slots.find((s) => !picks[s.key]) ?? decision?.slots[decision.slots.length - 1];
+  const step = decision && slot ? decision.slots.indexOf(slot) + 1 : 0;
+
+  useEffect(() => onSpeakingChange(setSpeakingState), []);
+
+  // New pause: start its clock, clear old picks. Popup closed: stop talking.
+  useEffect(() => {
+    if (id && !pausedAt.has(id)) pausedAt.set(id, Date.now());
+    if (id !== lastId.current) {
+      setPicks({});
+      setError(null);
+      setBlocked(false);
+      lastId.current = id;
+    }
+    if (!id) stop();
+  }, [id]);
+
+  // Tick the waiting clock once a second while open.
+  useEffect(() => {
+    if (!id) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [id]);
+
+  // Read each question aloud once. Autoplay may be blocked; the caption stays and Replay starts it.
+  const question = slot?.question ?? "";
+  const speakKey = id && slot ? `${id}#${slot.key}` : null;
+  useEffect(() => {
+    if (!speakKey || spoken.has(speakKey)) return;
+    spoken.add(speakKey);
+    speak(question).then((r) => setBlocked(r === "blocked"));
+  }, [speakKey, question]);
+
+  if (!decision || !slot) return null;
+
+  async function choose(vehicle: string) {
+    if (!decision || !slot || sending) return;
+    const next = { ...picks, [slot.key]: vehicle };
+    setPicks(next);
+    if (decision.slots.some((s) => !next[s.key])) return; // more roles to decide; the next question shows (and is spoken)
+    const assignments: Record<string, string> = { ...decision.alreadyAgreed };
+    decision.slots.forEach((s) => (assignments[next[s.key]] = s.incident));
+    setSending(true);
+    setError(null);
+    stop();
+    try {
+      await onResolve(assignments); // the popup closes when /state is no longer paused
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPicks({}); // start the choice over
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function replay() {
+    speak(question).then((r) => setBlocked(r === "blocked"));
+  }
+
+  function toggleMute() {
+    const next = !muted;
+    setMuted(next);
+    setMutedState(next);
+    if (!next) setBlocked(false);
+  }
+
+  const started = id ? pausedAt.get(id) ?? now : now;
+
+  return (
+    <div className="modal-backdrop">
+      <div className="decision" role="dialog" aria-modal="true" aria-labelledby="decision-title">
+        <header className="decision-head">
+          <span className="amber-dot" aria-hidden />
+          <h2 id="decision-title">Decision needed</h2>
+          {decision.slots.length > 1 && <span className="decision-step">{step} of {decision.slots.length}</span>}
+          <span className="waiting">Waiting {clock(now - started)}</span>
+        </header>
+
+        <section className="voice-card">
+          <div className="voice-bar">
+            <SpeakerIcon />
+            <span className="voice-label">Voice dispatch</span>
+            <span className={`wave${speaking ? " on" : ""}`} aria-hidden>
+              {Array.from({ length: 16 }, (_, i) => <i key={i} style={{ animationDelay: `${(i % 7) * 70}ms` }} />)}
+            </span>
+            <span className="voice-actions">
+              <button onClick={replay} disabled={muted}>Replay</button>
+              <span className="sep" aria-hidden />
+              <button onClick={toggleMute} aria-pressed={muted}>{muted ? "Unmute" : "Mute"}</button>
+            </span>
+          </div>
+          <p className="caption" aria-live="polite">{question}</p>
+          {blocked && !muted && <p className="voice-note">The browser blocked sound. Press Replay to hear it.</p>}
+        </section>
+
+        <div className={`option-grid n${Math.min(slot.options.length, 3)}`}>
+          {slot.options.map((o) => (
+            <button key={o.vehicle} className="option-card" disabled={sending} onClick={() => choose(o.vehicle)}>
+              <span className="option-top">
+                <span className="option-title">{o.title}</span>
+                {slot.severity !== null && <span className="sev-tag">Severity {slot.severity}</span>}
+              </span>
+              <span className="option-dist">
+                {o.distanceM !== null ? `${formatDistance(o.distanceM)} from ${slot.callName}` : slot.callName}
+              </span>
+              {o.support.map((line) => (
+                <span key={line} className="support"><CheckIcon />{line}</span>
+              ))}
+              <span className="backed">
+                {o.backers.length ? <>Backed by <b>{o.backers.join(", ")}</b></> : slot.noBids ? "No bid: pulled from its current call" : "No votes"}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {decision.failed.map((line) => (
+          <p key={line} className="failed"><XIcon />{line}</p>
+        ))}
+        {sending && <p className="voice-note">Sending your decision…</p>}
+        {error && <p className="failed"><XIcon />Could not send the decision: {error}</p>}
+      </div>
+    </div>
+  );
+}
+
+function SpeakerIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M11 5 6 9H3v6h3l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7" /><path d="M18.5 5.5a9 9 0 0 1 0 13" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="m5 12 5 5 9-10" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
