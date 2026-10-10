@@ -237,7 +237,9 @@ def _verify(world: World, claims: list[Claim], round_no: int) -> list[dict]:
 
 
 def _verifier(world: World, claim: Claim) -> str | None:
-    """Name the vehicle placed to check a claim: nearest police within 500 m, else nearest vehicle, else None."""
+    """Name the vehicle that checks a claim: trust.witness if the trust module has one, else nearest police within 500 m, else nearest vehicle."""
+    if hasattr(trust, "witness"):  # the real trust module names the vehicle whose view it judged by
+        return trust.witness(claim, world)
     incident = world.incidents.get(claim.incident) if claim.incident else None
     spot = incident.location if incident else claim.location
     near = [
@@ -457,6 +459,7 @@ def _resolve_role(
             "threshold": threshold,
             "votes": [v.model_dump() for v in votes],
             "contradicting_claims": _contradicting_claims(incident.id, claims, checks),
+            "checks": checks,  # lets should_escalate name who checked each contradicting claim
         })
         if decision:
             return None, False, tally, {"role": role, **decision}
