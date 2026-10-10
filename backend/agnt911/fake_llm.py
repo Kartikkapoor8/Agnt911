@@ -8,9 +8,9 @@ from .models import AgentOutput, Bid, Claim, Location, Vote
 SPEED_M_PER_S = 12.0
 TURNOUT_S = 30
 CAPABILITY = {
-    "ambulance": {"medical": 1.0, "crash": 0.8},
+    "ambulance": {"medical": 1.0, "crash": 0.8, "shooting": 0.8},
     "fire": {"fire": 1.0, "hazard": 0.8, "crash": 0.5},
-    "police": {"crash": 0.9, "hazard": 0.9, "fire": 0.4, "medical": 0.3},
+    "police": {"shooting": 1.0, "crash": 0.9, "hazard": 0.9, "fire": 0.4, "medical": 0.3},
 }
 _BOARD_LINE = re.compile(r"- (\w+): (\w+), severity (\d), at [-\d.,]+, (\d+) m from you")
 

@@ -1,6 +1,7 @@
 """run_round with a mocked LLM: propose, counter, vote, resolve. No network."""
 
 import asyncio
+import re
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from agnt911 import protocol, trust_stub
 from agnt911.fake_llm import fake_llm, split_user_message
 from agnt911.agents import VehicleAgent
 from agnt911.fake_world import build_fake_world
-from agnt911.models import Bid, Claim, Location
+from agnt911.models import Bid, Claim, Incident, Location
 
 
 class ScriptedLLM:
@@ -325,3 +326,26 @@ def test_minor_hazard_whose_fire_engine_is_taken_falls_back_to_police_at_resolve
     assert i4.assigned == ["P1"] and not i4.consensus and not i4.escalated
     assert i4.evidence == {"fallback": {"vehicle": "P1", "role": "police",
                                         "reason": "every fire option was assigned to a higher-severity incident"}}
+
+
+def test_prompt_tells_free_vehicles_to_always_bid_and_lists_the_same_roles_as_code():
+    """shared.md carries the always-bid rule, and its call-to-type list matches protocol.ROLES exactly."""
+    rule = ("If you are free and a call matches your type, always submit a bid, even if far or if it leaves "
+            "your district open. Put the cost of distance and district coverage in cost_to_district and "
+            "confidence, not in whether you bid. The fleet decides who goes; your job is to offer.")
+    shared = (protocol.__file__.rsplit("/", 1)[0] + "/prompts/shared.md")
+    text = open(shared).read()
+    assert rule in text
+    section = text.split("# Which calls match your type", 1)[1].split("\n# ", 1)[0]
+    listed = dict(re.findall(r"^- `(\w+)`: (.+)$", section, re.MULTILINE))
+    assert {k: v.split(", ") for k, v in listed.items()} == protocol.ROLES
+
+
+def test_shooting_needs_police_then_ambulance():
+    """A severity 3 shooting assigns police and an ambulance; severity 2 needs only police."""
+    for severity, expected in ((3, ["P1", "A1"]), (2, ["P1"])):
+        world = build_fake_world()
+        world.incidents = {"I6": Incident(id="I6", type="shooting", severity=severity,
+                                          location=Location(lat=37.3340, lng=-121.8890))}
+        [plan] = run(world, ScriptedLLM())
+        assert plan.assigned == expected and plan.consensus

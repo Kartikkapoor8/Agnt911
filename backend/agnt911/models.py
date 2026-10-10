@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 VehicleType = Literal["ambulance", "fire", "police"]
 VehicleStatus = Literal["free", "en_route", "on_scene"]
-IncidentType = Literal["medical", "fire", "crash", "hazard"]
+IncidentType = Literal["medical", "fire", "crash", "hazard", "shooting"]
 IncidentStatus = Literal["open", "assigned", "resolved"]
 ClaimType = Literal[
     "on_scene",

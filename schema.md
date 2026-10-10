@@ -44,7 +44,7 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | Field | Type | Notes |
 |---|---|---|
 | id | string | I1-I5 in the demo |
-| type | `"medical"` \| `"fire"` \| `"crash"` \| `"hazard"` | |
+| type | `"medical"` \| `"fire"` \| `"crash"` \| `"hazard"` \| `"shooting"` | |
 | severity | int | 1 to 5 |
 | location | Location | |
 | status | `"open"` \| `"assigned"` \| `"resolved"` | default `"open"` |
@@ -99,6 +99,7 @@ Each incident type needs these vehicle types, voted on separately. Severity 1-2 
 | fire | fire |
 | crash | ambulance, police |
 | hazard | fire, police |
+| shooting | police, ambulance |
 
 A bid is an option only if its vehicle has that role's type, its `capability_match` is at least 0.5 and the vehicle is not untrusted; at most 4 per role. Incidents resolve highest severity first; once a vehicle is assigned it drops out of every later incident's options.
 

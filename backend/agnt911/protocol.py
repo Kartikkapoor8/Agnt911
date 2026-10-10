@@ -49,6 +49,7 @@ ROLES = {
     "fire": ["fire"],
     "crash": ["ambulance", "police"],
     "hazard": ["fire", "police"],
+    "shooting": ["police", "ambulance"],
 }
 
 PROPOSE_TASK = (
