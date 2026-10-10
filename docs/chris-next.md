@@ -124,7 +124,7 @@ Superseded (commit "scenario: tight map, catchable hijacks, fake-call preset, ca
 
 ### 7. Escalation reason for a contested option (cosmetic)
 
-Since ea14803, a severity 4-5 role whose options were all won by another call in the same round still escalates. Protocol passes those options to `should_escalate` with tally `0.0` each, so the popup reason reads "A2 leads with 0.0 of 5.0 honest weight". The real choice is which call gets A2. Protocol adds `{"contested": {vehicle: call}}` to the escalation after your function returns, but `round_state` doesn't carry it. Paste:
+Since ea14803, a severity 4-5 role whose options were all won by another call in the same round still escalates. Protocol passes those options to `should_escalate` with tally `0.0` each, so the popup reason reads "A2 leads with 0.0 of … honest weight". The real choice is which call gets A2. Protocol adds `{"contested": {vehicle: call}}` to the escalation after your function returns, but `round_state` doesn't carry it. Paste:
 
 > Ask Kartik to add `"contested": contested` to the `round_state` dict in `protocol._resolve_role` (one line). Then, in `backend/agnt911/trust.py`, `should_escalate`: when `round_state.get("contested")` is non-empty, set `reason` to `f"{label} (severity {severity}): every option is committed to another call this round ({', '.join(f'{v} on {c}' for v, c in contested.items())}); choose which call gets it"`. Test with a `round_state` whose tally is all 0.0 and whose `contested` is `{"A2": "I6"}`, and assert the reason names I6.
 
