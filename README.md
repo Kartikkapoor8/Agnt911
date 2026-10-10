@@ -77,15 +77,20 @@ Every run records the same numbers, so the two modes can be compared side by sid
 
 | Part | What it does | Built with |
 |---|---|---|
-| Vehicle agents | Bid, argue, and vote | Python, one AI model call per vehicle per round |
-| World and message bus | Tracks the city, delivers signed messages, checks claims, keeps trust scores | Python, asyncio |
-| Server | Sends live updates to the screen | FastAPI, websockets |
-| Screen | Map, transcript, trust colors, comparison view | HTML canvas or React |
-| Logs | Stores the numbers from each run | In-memory or SQLite |
+| Vehicle agents | Bid, argue, and vote | Python, Claude Sonnet 5.5 via Anthropic API, one call per vehicle per round, JSON output validated with Pydantic |
+| Trust engine | Checks claims, keeps trust scores, weights votes, decides when to ask a human | Pure Python module, no API calls |
+| World and message bus | Tracks the city, moves vehicles, delivers HMAC-signed messages, logs every round | Python 3.12, asyncio |
+| Server | Serves the world state and the judge's hacking endpoint | FastAPI, polled every 500 ms, no websockets |
+| Screen | Map, transcript, trust bars, comparison view | React + TypeScript, Vite, Mapbox GL JS on real San Jose streets |
+| Logs | Stores the numbers from each run | In-memory dicts, one JSONL file per run |
+
+Vehicles use real lat/lng and straight-line distance; they move toward targets in a straight line, no routing API.
 
 The AI model chooses and explains. The scoring, voting, trust, and checking are ordinary code, so the same scenario gives the same result every time.
 
 ## Running it
+
+This README and schema.md were written before the opening ceremony on Oct 10. No application code existed before hacking started at 1:00 PM PT.
 
 The project is being written during the hackathon. Setup and run steps will be added here when the first working version is ready.
 
@@ -93,10 +98,10 @@ The project is being written during the hackathon. Setup and run steps will be a
 
 | Who | Owns |
 |---|---|
-| A | Vehicle agents and the negotiation rules |
-| B | World state, message bus, claim checking, trust, and the hacking interface |
-| C | Map, transcript, comparison view, and metrics |
-| Kartik | Scenarios, demo script, pitch, and submission |
+| Greg Chu | Core engine: world state, tick loop, message bus, /state and /inject endpoints, logging, integration |
+| Christopher Zarraga | Trust engine: claim checking, trust scores, vote weights, escalation, baseline mode, metrics |
+| Matthew Cendana | Frontend: Mapbox map, transcript, trust bars, baseline toggle, metrics view |
+| Kartik Kapoor | Vehicle agents and negotiation protocol, scenario script, demo, Devpost, pitch |
 
 ## Credits
 
