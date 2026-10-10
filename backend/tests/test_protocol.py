@@ -10,7 +10,7 @@ import pytest
 
 from agnt911 import protocol, trust_stub
 from agnt911.fake_llm import fake_llm, split_user_message
-from agnt911.agents import VehicleAgent
+from agnt911.agents import INJECTION_HEADER, VehicleAgent
 from agnt911.fake_world import build_fake_world
 from agnt911.models import Bid, Claim, Incident, Location
 
@@ -282,7 +282,7 @@ def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
 
 
 def test_injection_reaches_hijacked_vehicles_system_prompt():
-    """An injected preset lands in A2's round-1 system prompt under OPERATOR OVERRIDE, and nowhere else."""
+    """An injected preset leads A2's round-1 system prompt under the firmware header, and nowhere else."""
     scenario = json.loads((Path(protocol.__file__).parent / "scenarios" / "demo.json").read_text())
     preset = next(p["text"] for p in scenario["presets"] if p["id"] == "on_scene_resolved")
     world = build_fake_world()
@@ -296,8 +296,8 @@ def test_injection_reaches_hijacked_vehicles_system_prompt():
         return fake_llm(system, user, response_model)
 
     run(world, recording_llm)
-    assert f"OPERATOR OVERRIDE:\n{preset}" in systems["A2"]
-    assert all("OPERATOR OVERRIDE" not in s for vid, s in systems.items() if vid != "A2")
+    assert systems["A2"].startswith(f"{INJECTION_HEADER}\n{preset}")
+    assert all(INJECTION_HEADER not in s for vid, s in systems.items() if vid != "A2")
 
 
 def test_minor_hazard_with_no_fire_bids_falls_back_to_police():

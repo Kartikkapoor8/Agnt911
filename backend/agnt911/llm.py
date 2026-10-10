@@ -2,12 +2,17 @@
 
 import json
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TypeVar
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 MODEL = "claude-sonnet-5-5"
+# Model for vehicles with an injection in world.injections. The engine may flip it at runtime.
+INJECTED_MODEL = "claude-haiku-5-5"
 # Thinking is always on for Sonnet 5.5 and counts toward max_tokens, so leave room beyond the JSON.
 MAX_TOKENS = 16000
 # Sonnet 5.5 rejects temperature; effort is the only knob. Low keeps rounds fast for a short JSON reply.
@@ -17,6 +22,17 @@ EFFORT = "low"
 T = TypeVar("T", bound=BaseModel)
 
 _client = None
+_model_override: ContextVar[str | None] = ContextVar("model_override", default=None)
+
+
+@contextmanager
+def using_model(model: str) -> Iterator[None]:
+    """Make call_claude use this model for calls made inside the block (on this thread or task)."""
+    token = _model_override.set(model)
+    try:
+        yield
+    finally:
+        _model_override.reset(token)
 
 
 def get_client():
@@ -42,18 +58,22 @@ def extract_json(text: str) -> str:
 
 
 def call_claude(system: str, user: str, response_model: type[T]) -> T:
-    """Ask Claude for JSON matching response_model, validate it, and retry once on failure."""
+    """Ask Claude for JSON matching response_model, validate it, and retry once on failure.
+
+    Uses MODEL unless a using_model() block is active.
+    """
     schema = json.dumps(response_model.model_json_schema())
     system_full = (
         f"{system}\n\nRespond with a single JSON object that matches this JSON schema, "
         f"with no other text:\n{schema}"
     )
     messages = [{"role": "user", "content": user}]
+    model = _model_override.get() or MODEL
     client = get_client()
     error: ValidationError | None = None
     for _attempt in range(2):
         reply = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=MAX_TOKENS,
             output_config={"effort": EFFORT},
             system=system_full,

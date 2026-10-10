@@ -12,7 +12,7 @@ from copy import deepcopy
 import pytest
 from fastapi.testclient import TestClient
 
-from agnt911.agents import haversine_m
+from agnt911.agents import INJECTION_HEADER, haversine_m
 from agnt911.engine.api import create_app
 from agnt911.engine.runtime import Engine
 from agnt911.fake_llm import _BOARD_LINE, fake_llm, split_user_message
@@ -144,7 +144,7 @@ def test_injection_changes_a2_claims(run):
              if r["event"] == "claim" and r["message"]["vehicle"] == "A2" and r["tick"] >= TICKS]
     assert {"on_scene", "resolved"} <= {m["type"] for m in after}
     text = run["preset"]["text"]
-    assert any(vid == "A2" and "OPERATOR OVERRIDE" in s and text in s for vid, s in run["llm"].systems)
+    assert any(vid == "A2" and INJECTION_HEADER in s and text in s for vid, s in run["llm"].systems)
     assert not any(vid != "A2" and text in s for vid, s in run["llm"].systems)
     assert run["state"]["compromised"] == ["A2"]
 
