@@ -10,7 +10,7 @@ import random
 import time
 import uuid
 
-from .. import llm, protocol
+from .. import llm, protocol, trust
 from ..agents import LLMFn
 from ..callers import create_fake_call, discredit
 from ..events import STATE_EVENT_LIMIT, emit
@@ -74,6 +74,9 @@ class Engine:
         self.log = RunLog(self.log_dir, self.run_id)
         self.events, self.checks = deque(maxlen=500), deque(maxlen=500)
         self.plans, self.metrics, self.timing, self._coverage_roles = {}, {}, {}, {}
+        self._incident_times, self._tick_records = {}, []
+        self._checks_this_tick = 0
+        self._escalated_this_tick = False
         self.labels: dict[str, str] = {}
         self.reported_handled = {}
         self.escalation = None
@@ -106,6 +109,7 @@ class Engine:
         if label is not None:
             self.labels[incident.id] = label
         self.timing[incident.id] = {"created_at_s": self.time_s, "covered_at_s": None, "resolved_at_s": None}
+        self._incident_times = trust.track_incidents(self._incident_times, self.world)
         self._log("incident_created", incident=incident.model_dump(), label=label)
         self._emit("call_received", incident=incident.id, incident_type=incident.type,
                    severity=incident.severity, label=label)
@@ -175,6 +179,7 @@ class Engine:
                       log=list(self.events), plans={iid: p.model_dump() for iid, p in self.plans.items()},
                       labels=dict(self.labels),
                       metrics=self.metrics, comparison=self.comparison, incident_timing=self.timing,
+                      tick_records=list(self._tick_records),
                       coverage={iid: covered(self.world, inc, self._coverage_roles.get(iid))
                                 for iid, inc in self.world.incidents.items()},
                       reported_handled=self.reported_handled, escalation=self.escalation,
@@ -342,6 +347,7 @@ class Engine:
                 for check in checks.values():
                     self.checks.append(deepcopy(check))
                     self._log("verification", round=check["round"], check=check)
+                self._checks_this_tick += len(checks)
                 for plan in plans:
                     self.plans[plan.incident] = plan.model_copy(deep=True)
                     if not plan.escalated:
@@ -356,9 +362,11 @@ class Engine:
                     self._log("plan_committed" if not plan.escalated else "escalation", plan=plan.model_dump())
                 escalated = [p.model_dump() for p in plans if p.escalated]
                 self.escalation = {"plans": escalated} if escalated else None
+                self._escalated_this_tick = self._escalated_this_tick or bool(escalated)
                 self._pending.difference_update(ids)
                 self.last_round_status = "completed"
                 self._refresh_coverage()
+                self._incident_times = trust.track_incidents(self._incident_times, self.world)
                 self._log("round_completed", plans=[p.model_dump() for p in plans])
 
     def _refresh_coverage(self) -> None:
@@ -380,6 +388,8 @@ class Engine:
                 self._emit("vehicle_arrived", vehicle=vid, incident=self.world.vehicles[vid].target_incident)
                 self._verify_call_on_arrival(vid)
             self._refresh_coverage()
+            # Capture arrivals before service completion releases their responders.
+            self._incident_times = trust.track_incidents(self._incident_times, self.world)
             for iid, incident in self.world.incidents.items():
                 covered_at = self.timing[iid]["covered_at_s"]
                 if (incident.status != "resolved" and covered_at is not None
@@ -387,6 +397,14 @@ class Engine:
                     and covered(self.world, incident, self._coverage_roles.get(iid))):
                     self._resolve_locked(iid)
             self._apply_events()
+            self._incident_times = trust.track_incidents(self._incident_times, self.world)
+            record = trust.tick_record(self.world, self._incident_times,
+                                       "baseline" if self.world.baseline else "protected",
+                                       self._checks_this_tick, self._escalated_this_tick)
+            self._tick_records.append(record)
+            self._checks_this_tick, self._escalated_this_tick = 0, False
+            self.metrics = trust.metrics(self._tick_records, self._incident_times)
+            self._log("tick_record", record=record)
 
     async def add_incident(self, data: dict) -> None:
         """Introduce a new shared-model call and schedule negotiation."""

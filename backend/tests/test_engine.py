@@ -107,12 +107,56 @@ def test_incident_negotiation_dispatch_movement_and_api_end_to_end(tmp_path, mon
         assert {m["kind"] for m in state["recent_messages"]} == {"claim", "bid", "vote"}
         assert all(engine.bus.verify(m) for m in engine.world.recent_messages)
         assert state["integration"]["trust_stub"] is True
-        assert not state["integration"]["metrics_available"]
+        assert state["integration"]["metrics_available"]
+        assert state["tick_records"][-1]["tick"] == state["tick"]
+        assert set(state["tick_records"][-1]["trust"]) == set(state["vehicles"])
         assert "injections" not in state
     events = records(engine)
     assert {"incident_created", "claim", "bid", "vote", "plan_committed", "dispatch"} <= {e["event"] for e in events}
     assert all("tick" in e and "decision" in e for e in events)
     assert events[-1]["event"] == "run_stopped"
+
+
+def test_demo_metrics_and_baseline_comparison(tmp_path):
+    """Real trust metrics count committed checks and served calls, then reset for baseline comparison."""
+    async def scenario():
+        engine = Engine(tmp_path)
+        try:
+            for _ in range(41):
+                await engine.run_round()
+                await engine.step(1)
+            state = await engine.state()
+            assert state["integration"]["metrics_available"]
+            assert state["metrics"]["incidents_served"] >= 1
+            assert state["metrics"]["checks_total"] > 0
+            assert [r["tick"] for r in state["tick_records"]] == list(range(1, 42))
+            assert all(r["mode"] == "protected" for r in state["tick_records"])
+            checks = [r for r in records(engine) if r["event"] == "verification"]
+            assert state["metrics"]["checks_total"] == len(checks)
+            assert sum(r["checks"] for r in state["tick_records"]) == len(checks)
+            assert len([r for r in records(engine) if r["event"] == "tick_record"]) == 41
+            assert engine._incident_times["I1"]["created"] == 0
+            assert engine._incident_times["I3"]["created"] == 5
+            assert engine._incident_times["I4"]["created"] == 20
+            protected_metrics = dict(state["metrics"])
+            state["tick_records"][0]["trust"]["A1"] = -1
+            assert (await engine.state())["tick_records"][0]["trust"]["A1"] >= 0
+            await engine.set_mode("baseline")
+            fresh = await engine.state()
+            assert fresh["tick_records"] == []
+            assert fresh["comparison"][-1]["metrics"] == protected_metrics
+            assert fresh["comparison"][-1]["baseline"] is False
+            for _ in range(41):
+                await engine.run_round()
+                await engine.step(1)
+            baseline = await engine.state()
+            assert baseline["metrics"]["checks_total"] == 0
+            assert len(baseline["tick_records"]) == 41
+            assert all(r["mode"] == "baseline" and r["checks"] == 0 for r in baseline["tick_records"])
+            assert baseline["comparison"][-1]["metrics"] == protected_metrics
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
 
 
 def test_movement_arrival_coverage_and_resolution(tmp_path):
@@ -158,6 +202,8 @@ def test_service_timer_releases_and_reuses_vehicle(tmp_path):
             assert engine.world.vehicles["A1"].status == "free"
             assert engine.world.incidents["I1"].assigned == []
             assert engine.timing["I1"]["resolved_at_s"] == 20
+            assert engine.metrics["incidents_served"] == 1
+            assert engine.metrics["mean_response_ticks"] == 0
             assert "N1" in engine._pending
             await engine.run_round()
             assert engine.world.vehicles["A1"].target_incident == "N1"
@@ -301,6 +347,11 @@ def test_baseline_belief_does_not_falsify_physical_coverage(tmp_path):
             assert not state["coverage"]["I1"]
             assert state["incidents"]["I1"]["status"] != "resolved"
             assert all(v["target_incident"] is None for v in state["vehicles"].values())
+            await engine.step()
+            state = await engine.state()
+            assert state["metrics"]["incidents_false_handled"] == 1
+            assert state["metrics"]["incidents_served"] == 0
+            assert state["metrics"]["checks_total"] == 0
         finally:
             await engine.stop()
     asyncio.run(scenario())
@@ -347,6 +398,8 @@ def test_changed_scenarios_discard_in_flight_plans(tmp_path, change):
             await task
             assert engine.world.vehicles["A1"].target_incident is None
             assert engine.last_round_status == "discarded"
+            await engine.step()
+            assert engine.metrics["checks_total"] == 0
         finally:
             await engine.stop()
     asyncio.run(scenario())
@@ -372,6 +425,8 @@ def test_bad_protocol_results_do_not_partially_apply(tmp_path, failure):
             assert engine.world.vehicles["A1"].target_incident is None
             assert engine.world.vehicles["A1"].trust == 1
             assert records(engine)[-1]["event"] == "round_failed"
+            await engine.step()
+            assert engine.metrics["checks_total"] == 0
         finally:
             await engine.stop()
     asyncio.run(scenario())
@@ -417,12 +472,22 @@ def test_human_escalation_pauses_ticks_and_explicit_choice_resumes(tmp_path):
             tick_before = engine.world.tick
             await engine.step()
             assert engine.world.tick == tick_before
+            assert not (await engine.state())["tick_records"]
             chosen = engine.escalation["plans"][0]["evidence"]["options"][0]
             await engine.resolve({chosen: "I1"})
             assert engine.escalation is None
             await engine.step()
             assert engine.world.tick == tick_before + 1
             assert engine.world.vehicles[chosen].target_incident == "I1"
+            state = await engine.state()
+            assert state["tick_records"][0]["escalation"] is True
+            assert state["metrics"]["escalations"] == 1
+            assert state["metrics"]["checks_total"] == len(engine.checks)
+            await engine.step()
+            state = await engine.state()
+            assert state["tick_records"][-1]["escalation"] is False
+            assert state["tick_records"][-1]["checks"] == 0
+            assert state["metrics"]["escalations"] == 1
         finally:
             await engine.stop()
     asyncio.run(scenario())

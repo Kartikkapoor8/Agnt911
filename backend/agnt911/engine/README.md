@@ -85,13 +85,28 @@ resolution. A false "resolved" report can suppress dispatch while coverage stays
 false. Switching modes resets the original scenario, injections and RNG, preserving
 previous timing/metric summaries in `comparison`.
 
+Each completed movement tick calls Chris's `trust.track_incidents`,
+`trust.tick_record`, and `trust.metrics` helpers. `/state.metrics` contains served
+and falsely handled counts, mean response in ticks, unserved calls, verification
+totals, escalation totals, and each vehicle's first untrusted tick. These helpers
+count first service by a trusted, suitable committed responder within their
+100 m arrival radius; this differs from the engine's physical coverage check for
+all required roles. Creation ticks are retained from the moment calls appear.
+
+`tick_records` provides the run's complete per-tick history of checks, vehicle
+trust, incident outcomes and mode. Each row is also logged as `tick_record` in
+JSONL. Only committed decisions contribute verification counts. During a human
+pause, checks and the escalation flag wait for the next movement tick; they are
+recorded once after the human resolves the escalation. `/mode` archives the
+current metrics in `comparison` and resets rows and counters for the new run.
+
 ## HTTP contract
 
 - `GET /state`: the team's World fields (`tick`, `vehicles`, `incidents`,
   `recent_messages`, `baseline`) plus `run_id`, `seed`, `time_s`, `decision`,
   `mode`, `compromised`, `plans`, `checks`, `events` (the typed stream, last 500; see
   docs/events.md), `log` (the engine's own bounded record feed), `coverage`, `incident_timing`,
-  `reported_handled`, `metrics`, `comparison`, `escalation`, `paused`, `integration`,
+  `reported_handled`, `metrics`, `tick_records`, `comparison`, `escalation`, `paused`, `integration`,
   `map_center`, `presets`, and `labels` (incident ID to display text). Labels stay
   available when their creation events leave the bounded feed and reset with the
   scenario. `add_incident()` and `update_incident()` accept a string `label`
@@ -150,9 +165,10 @@ this RNG. Wall-clock movement and live LLM replies are not deterministic.
 - The default fake LLM is honest and trusts its own view, so a corrupted sensor
   feed misleads it the same way it misleads the real model (tests/test_feed.py).
   scripts/probe_injection.py checks the four presets against the live model.
-- Chris's metrics calculator is not connected or invented. `metrics` remains
-  empty and `integration.metrics_available` false. Physical coverage and timestamps
-  are available for a later calculator.
+- Metrics use Chris's real `agnt911.trust` directly, even when a test pins the
+  protocol's verification module to a stub. Metrics populate after the first
+  movement tick, when `integration.metrics_available` becomes true. Unrecorded
+  checks from a paused decision are cleared if the run is reset before resuming.
 - Real SDK calls run in worker threads. A 90-second decision timeout keeps the
   engine responsive, but cancelling a coroutine cannot terminate an in-flight
   synchronous network request; the SDK's own timeout controls that request.
