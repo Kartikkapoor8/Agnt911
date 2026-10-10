@@ -8,8 +8,11 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
 MODEL = "claude-sonnet-5-5"
-MAX_TOKENS = 2048
-TEMPERATURE = 0.2
+# Thinking is always on for Sonnet 5.5 and counts toward max_tokens, so leave room beyond the JSON.
+MAX_TOKENS = 16000
+# Sonnet 5.5 rejects temperature; effort is the only knob. Low keeps rounds fast for a short JSON reply.
+# Determinism comes from our code: scoring, voting and trust are plain Python.
+EFFORT = "low"
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -52,10 +55,12 @@ def call_claude(system: str, user: str, response_model: type[T]) -> T:
         reply = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            temperature=TEMPERATURE,
+            output_config={"effort": EFFORT},
             system=system_full,
             messages=messages,
         )
+        if getattr(reply, "stop_reason", None) == "refusal":
+            raise RuntimeError(f"Claude declined this turn: {getattr(reply, 'stop_details', None)}")
         text = "".join(b.text for b in reply.content if getattr(b, "type", "") == "text")
         try:
             return response_model.model_validate_json(extract_json(text))
