@@ -493,6 +493,37 @@ def test_human_escalation_pauses_ticks_and_explicit_choice_resumes(tmp_path):
     asyncio.run(scenario())
 
 
+def test_human_reassignment_replaces_missing_role_on_partially_assigned_call(tmp_path):
+    """Moving a crash's ambulance queues that crash again while retaining its police responder."""
+    async def scenario():
+        world = build_fake_world()
+        world.incidents = {iid: world.incidents[iid] for iid in ("I1", "I3")}
+        assign(world, {"A2": "I3", "P1": "I3"})
+        def split(system, user, response_model):
+            output = fake_llm(system, user, response_model)
+            payload, task = split_user_message(user)
+            if task.startswith("Round 3"):
+                output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
+            return output
+        engine = Engine(tmp_path, world=world, llm_fn=split)
+        try:
+            await engine.run_round()
+            assert engine.escalation["plans"][0]["incident"] == "I1"
+            await engine.resolve({"A2": "I1"})
+            state = await engine.state()
+            assert state["incidents"]["I3"]["status"] == "assigned"
+            assert state["incidents"]["I3"]["assigned"] == ["P1"]
+            assert "I3" in engine._pending
+            await engine.run_round()
+            state = await engine.state()
+            assert {state["vehicles"][vid]["type"] for vid in state["incidents"]["I3"]["assigned"]} == {"ambulance", "police"}
+            assert state["vehicles"]["A2"]["target_incident"] == "I1"
+            assert "I3" not in engine._pending
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
 def test_seeded_rng_and_unique_claim_ids_reset_by_run(tmp_path):
     """Trust can consume per-decision RNG; resets replay draws while claim IDs stay unique per run."""
     async def scenario():

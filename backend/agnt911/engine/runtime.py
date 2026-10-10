@@ -496,12 +496,23 @@ class Engine:
                                   consensus=False, escalated=False, evidence={"human": True}))
             changes = self._plan_assignments(plans, human=True)  # a human may move a vehicle off another call
             assign(self.world.model_copy(deep=True), assignments)
-            self._commit({**changes, **assignments}, "human")
+            targets = {**changes, **assignments}
+            moved_from = {self.world.vehicles[vid].target_incident for vid, iid in targets.items()
+                          if self.world.vehicles[vid].target_incident not in (None, iid)}
+            self._commit(targets, "human")
             for plan in plans:
                 self.plans[plan.incident] = plan
             self.escalation = None
             self._revision += 1
             self._pending.update(i.id for i in self.world.incidents.values() if i.status == "open")  # calls the human's choice left uncovered
+            for iid in moved_from:
+                incident = self.world.incidents[iid]
+                needed = set(self._coverage_roles.get(iid) or protocol.required_roles(incident))
+                remaining = {v.type for v in self.world.vehicles.values()
+                             if v.target_incident == iid and v.status in ("en_route", "on_scene")
+                             and not v.untrusted}
+                if incident.status != "resolved" and not needed <= remaining:
+                    self._pending.add(iid)
             self._log("human_resolution", assignments=assignments)
             self._emit("human_resolved", assignments=assignments)
 
