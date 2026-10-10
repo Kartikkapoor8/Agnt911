@@ -41,7 +41,7 @@ class Engine:
     def __init__(self, log_dir: str | Path = "logs", agents: dict[str, Agent] | None = None,
                  protocol: ProtocolRunner | None = None, tick_interval_s: float = 0.1,
                  round_interval_s: float = 2.0, agent_timeout_s: float = 30.0,
-                 seed: int = 911):
+                 seed: int = 911, world_factory: Callable[[], dict] = create_world):
         for value in (tick_interval_s, round_interval_s, agent_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Intervals and timeouts must be positive and finite")
@@ -49,11 +49,12 @@ class Engine:
         if type(seed) is not int:
             raise ValueError("Seed must be an integer")
         self.seed = seed
+        self.world_factory = world_factory
         self.agents = dict(agents or {})
         self.protocol = protocol
         if bool(self.agents) != bool(self.protocol):
             raise ValueError("Provide both vehicle agents and a protocol runner")
-        if self.agents and set(self.agents) != set(create_world()["vehicles"]):
+        if self.agents and set(self.agents) != set(world_factory()["vehicles"]):
             raise ValueError("Adapter must supply all seven vehicle agents")
         self.tick_interval_s = tick_interval_s
         self.round_interval_s = round_interval_s
@@ -69,7 +70,7 @@ class Engine:
     def _new_run(self, mode: str) -> None:
         self.run_id = uuid.uuid4().hex
         self.mode = mode
-        self.world = create_world()
+        self.world = self.world_factory()
         self.rng = random.Random(self.seed)
         self.round_number = 0
         self.metrics = {}
@@ -247,7 +248,7 @@ class Engine:
                         raise ValueError("Trust must be finite and between 0 and 1")
                 if not isinstance(result.checks, list):
                     raise ValueError("Checks must be a list")
-                known_claims = {(m["sender"], m["sequence"]) for m in snapshot["transcript"] + messages
+                known_claims = {(m["sender"], m["sequence"]) for m in self.bus.transcript() + messages
                                 if m["kind"] == "claim"}
                 for check in result.checks:
                     if (not isinstance(check, dict)

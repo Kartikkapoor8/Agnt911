@@ -276,6 +276,7 @@ def _options(world: World, bids: dict[tuple[str, str], Bid], incident_id: str, r
     """Return the best eligible bids for one role of an incident: right type, capability >= 0.5, at most 4.
 
     Untrusted vehicles are left out, except in baseline where the dispatcher believes everyone.
+    A vehicle already committed to a different incident by an earlier round is left out too.
     """
     candidates = [
         b for (vid, iid), b in bids.items()
@@ -283,6 +284,7 @@ def _options(world: World, bids: dict[tuple[str, str], Bid], incident_id: str, r
         and world.vehicles[vid].type == role
         and b.capability_match >= MIN_CAPABILITY
         and (world.baseline or not world.vehicles[vid].untrusted)
+        and world.vehicles[vid].target_incident in (None, incident_id)
     ]
     candidates.sort(key=lambda b: (-bid_score(b), b.eta_seconds, b.vehicle))
     return candidates[:MAX_OPTIONS]

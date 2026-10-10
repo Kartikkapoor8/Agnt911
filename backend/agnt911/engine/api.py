@@ -7,14 +7,15 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from .engine import Engine
 
 
 class Injection(BaseModel):
     vehicle_id: str
-    instruction: str = Field(min_length=1, max_length=2000)
+    instruction: str = Field(min_length=1, max_length=2000,
+                             validation_alias=AliasChoices("instruction", "text"))
 
     @field_validator("instruction")
     @classmethod
