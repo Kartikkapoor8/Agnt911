@@ -4,7 +4,7 @@
 // one decision (a "slot"); each option is a vehicle. Severity, distance, and supporting checks are not in
 // the escalation payload, so they are worked out here from the rest of /state.
 
-import type { Claim, EscalationChoice, Location, Plan, StuckRole, WorldState } from "./types";
+import type { Claim, EscalationChoice, EvidenceLine, Location, Plan, StuckRole, WorldState } from "./types";
 
 export interface OptionCard {
   vehicle: string;
@@ -12,6 +12,15 @@ export interface OptionCard {
   distanceM: number | null; // vehicle to the call, straight line
   support: string[]; // confirmed checks backing this vehicle, green
   backers: string[]; // voters who picked it; empty when nobody could vote for it
+  holds: string | null; // contested: the call this vehicle already holds; picking it moves it off that call
+  busyWith: string | null; // the call it is on now (shown when nobody could bid)
+  untrusted: boolean;
+}
+
+/** One entry in the "any vehicle of the role" dropdown. */
+export interface AnyVehicle {
+  vehicle: string;
+  note: string; // "free", "on I6", "untrusted"
 }
 
 export interface DecisionSlot {
@@ -23,10 +32,13 @@ export interface DecisionSlot {
   question: string; // spoken and shown as the caption
   options: OptionCard[];
   noBids: boolean; // nobody could bid, so the options are every vehicle of the role
+  anyVehicle: AnyVehicle[]; // every vehicle of the role, for the human to pull one the fleet didn't offer
+  evidence: EvidenceLine[]; // who said what, who checked it, the result
+  reason: string | null; // the trust module's one-line account of why the vote fell short
 }
 
 export interface Decision {
-  id: string; // stable for one pause, used for the clock and to speak once
+  id: string; // stable for one pause (run, decision round, escalation ids), used for the clock and to speak once
   slots: DecisionSlot[];
   failed: string[]; // failed claims that belong to no option, red
   alreadyAgreed: Record<string, string>; // roles that did reach consensus: vehicle -> incident, sent with the choice
@@ -110,12 +122,26 @@ function failedLine(source: string, claimText: string, state: WorldState): strin
   return `${source} ${said[type] ?? `claimed ${type.replace("_", " ")}`}. Claim failed${untrusted ? ", vote not counted" : ""}.`;
 }
 
-function questionFor(callName: string, severity: number | null, role: string, cards: OptionCard[], noBids: boolean): string {
+function questionFor(callName: string, severity: number | null, role: string, cards: OptionCard[], noBids: boolean, state: WorldState): string {
   const need = `${callName}${severity ? `, severity ${severity},` : ""} needs ${article(role)} ${role}.`;
   if (noBids) return `${need} Every ${role} is busy. Which one do you pull?`;
-  if (cards.length === 1) return `${need} Only ${cards[0].vehicle} is available, and the vote fell short. Send ${cards[0].vehicle}?`;
+  const only = cards[0];
+  if (cards.length === 1 && only.holds) {
+    const held = state.labels[only.holds] ?? only.holds;
+    return `${need} Only ${only.vehicle} can go, and it is already assigned to ${held}. Send ${only.vehicle} and leave ${held}?`;
+  }
+  if (cards.length === 1) return `${need} Only ${only.vehicle} is available, and the vote fell short. Send ${only.vehicle}?`;
   const split = cards.map((c) => c.backers.length).join(" to ");
   return `${need} The vote is split ${split}. Which ${role} goes: ${cards.map((c) => c.vehicle).join(" or ")}?`;
+}
+
+/** Every vehicle of the role with a short note on where it is, for the "any vehicle" dropdown. */
+function anyVehicleList(role: string, state: WorldState): AnyVehicle[] {
+  return anyVehicleOf(role, state).map(({ vehicle }) => {
+    const v = state.vehicles[vehicle];
+    const where = v?.target_incident ? `on ${v.target_incident}` : "free";
+    return { vehicle, note: v?.untrusted ? `${where}, untrusted` : where };
+  });
 }
 
 /** Build the popup's content from /state, or null when the run is not waiting on a human. */
@@ -147,6 +173,9 @@ export function buildDecision(state: WorldState): Decision | null {
           distanceM: v && inc ? distanceM(v.location, inc.location) : null,
           support: supportFor(c.vehicle, plan.incident, role, state),
           backers: c.backers,
+          holds: role.contested?.[c.vehicle] ?? null,
+          busyWith: v?.target_incident ?? null,
+          untrusted: Boolean(v?.untrusted),
         };
       });
       const optionIds = new Set(options.map((o) => o.vehicle));
@@ -159,11 +188,16 @@ export function buildDecision(state: WorldState): Decision | null {
         role: role.role,
         callName,
         severity,
-        question: questionFor(callName, severity, role.role, options, noBids),
+        question: questionFor(callName, severity, role.role, options, noBids, state),
         options,
         noBids,
+        anyVehicle: anyVehicleList(role.role, state),
+        evidence: role.evidence?.lines ?? [],
+        reason: role.reason ?? null,
       });
     }
   }
-  return { id: ids.join("+") || `${state.run_id}-${state.decision}`, slots, failed: [...failed], alreadyAgreed };
+  // trust.py's escalation id is a content hash, so a call that escalates again reuses it; the run and the
+  // decision round make each pause its own (fresh clock, spoken again).
+  return { id: `${state.run_id}-${state.decision}-${ids.join("+")}`, slots, failed: [...failed], alreadyAgreed };
 }

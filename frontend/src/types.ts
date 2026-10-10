@@ -1,5 +1,6 @@
 // Shapes of GET /state, copied from backend/agnt911/models.py and Engine._state() in
-// backend/agnt911/engine/runtime.py. Only fields the backend actually sends.
+// backend/agnt911/engine/runtime.py. Only fields the backend actually sends. docs/frontend-contract.md
+// has the same shapes generated from real responses.
 
 export interface Location {
   lat: number;
@@ -136,6 +137,43 @@ export interface TypedEvent {
   data: Record<string, unknown>;
 }
 
+/** One verification row from /state.check_events: who checked whom, the result, and the trust it cost. */
+export interface CheckEvent {
+  id: string;
+  tick: number;
+  target: string; // the vehicle whose claim or bid was checked
+  checker: string | null;
+  incident: string | null;
+  subject: "claim" | "bid";
+  result: "pass" | "fail" | "inconclusive";
+  trust_before: number;
+  trust_after: number;
+}
+
+/** One record per tick of the current run (trust.tick_record). */
+export interface TickRecord {
+  tick: number;
+  mode: "protected" | "baseline";
+  incidents_open: string[];
+  incidents_served: string[];
+  incidents_false_handled: string[];
+  checks: number;
+  trust: Record<string, number>;
+  untrusted: string[];
+  escalation: boolean;
+}
+
+/** Headline numbers for one run (trust.metrics). Empty until the run's first tick record. */
+export interface Metrics {
+  incidents_served: number;
+  incidents_false_handled: number; // no longer open, but no responder was assigned
+  mean_response_ticks: number | null;
+  unserved: number;
+  checks_total: number;
+  escalations: number;
+  first_untrusted_tick: Record<string, number>; // vehicle -> tick it was first untrusted
+}
+
 export interface IncidentTiming {
   created_at_s: number;
   covered_at_s: number | null;
@@ -145,7 +183,7 @@ export interface IncidentTiming {
 export interface ComparisonEntry {
   run_id: string;
   baseline: boolean;
-  metrics: Record<string, unknown>;
+  metrics: Partial<Metrics>;
   incident_timing: Record<string, IncidentTiming>;
 }
 
@@ -186,7 +224,10 @@ export interface EvidenceLine {
 export interface StuckRole {
   role: string;
   id?: string;
+  incident?: string;
+  severity?: number;
   reason?: string;
+  contested?: Record<string, string>; // option vehicle -> the call it already holds; picking it moves it
   options: string[];
   choices?: EscalationChoice[];
   evidence?: { votes?: Vote[]; contradicting_claims?: Claim[]; lines?: EvidenceLine[] };
@@ -213,8 +254,10 @@ export interface WorldState {
   plans: Record<string, Plan>;
   labels: Record<string, string>; // incident id -> display text
   callers: Record<string, number>; // outside caller id -> credibility (starts 1.0, -0.3 per false call)
-  metrics: Record<string, unknown>; // empty until the trust/metrics module lands
-  comparison: ComparisonEntry[];
+  metrics: Partial<Metrics>; // current run; empty before its first tick
+  comparison: ComparisonEntry[]; // finished runs, appended on POST /mode
+  check_events: CheckEvent[]; // one row per verification, last 500
+  tick_records: TickRecord[];
   incident_timing: Record<string, IncidentTiming>;
   coverage: Record<string, boolean>;
   reported_handled: Record<string, Claim>;

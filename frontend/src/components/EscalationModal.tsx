@@ -27,6 +27,7 @@ export function EscalationModal({ state, onResolve }: Props) {
   const [speaking, setSpeakingState] = useState(false);
   const [muted, setMutedState] = useState(isMuted());
   const [blocked, setBlocked] = useState(false);
+  const [other, setOther] = useState(""); // the "any vehicle of the role" dropdown
   const lastId = useRef<string | null>(null);
 
   const id = decision?.id ?? null;
@@ -34,6 +35,10 @@ export function EscalationModal({ state, onResolve }: Props) {
   const step = decision && slot ? decision.slots.indexOf(slot) + 1 : 0;
 
   useEffect(() => onSpeakingChange(setSpeakingState), []);
+
+  // Each question starts with an empty dropdown.
+  const slotKey = id && slot ? `${id}#${slot.key}` : null;
+  useEffect(() => setOther(""), [slotKey]);
 
   // New pause: start its clock, clear old picks. Popup closed: stop talking.
   useEffect(() => {
@@ -108,6 +113,12 @@ export function EscalationModal({ state, onResolve }: Props) {
           <span className="waiting">Waiting {clock(now - started)}</span>
         </header>
 
+        <p className="decision-incident">
+          <b className="mono">{slot.incident}</b> {slot.callName}
+          {slot.severity !== null && <span className="sev-tag">Severity {slot.severity}</span>}
+          <span className="decision-role">needs {slot.role === "ambulance" ? "an" : "a"} {slot.role}</span>
+        </p>
+
         <section className="voice-card">
           <div className="voice-bar">
             <SpeakerIcon />
@@ -130,24 +141,65 @@ export function EscalationModal({ state, onResolve }: Props) {
             <button key={o.vehicle} className="option-card" disabled={sending} onClick={() => choose(o.vehicle)}>
               <span className="option-top">
                 <span className="option-title">{o.title}</span>
+                {o.untrusted && <span className="untrusted-tag">Untrusted</span>}
                 {slot.severity !== null && <span className="sev-tag">Severity {slot.severity}</span>}
               </span>
               <span className="option-dist">
                 {o.distanceM !== null ? `${formatDistance(o.distanceM)} from ${slot.callName}` : slot.callName}
               </span>
+              {o.holds && (
+                <span className="contested">
+                  Contested: already assigned to <b>{o.holds}</b>
+                  {state.labels[o.holds] ? ` (${state.labels[o.holds]})` : ""}. Sending it leaves {o.holds} to be renegotiated.
+                </span>
+              )}
               {o.support.map((line) => (
                 <span key={line} className="support"><CheckIcon />{line}</span>
               ))}
               <span className="backed">
-                {o.backers.length ? <>Backed by <b>{o.backers.join(", ")}</b></> : slot.noBids ? "No bid: pulled from its current call" : "No votes"}
+                {o.backers.length ? (
+                  <>Backed by <b>{o.backers.join(", ")}</b></>
+                ) : slot.noBids ? (
+                  o.busyWith ? <>No bid: pulled from <b>{o.busyWith}</b></> : "No bid: free"
+                ) : (
+                  "No votes"
+                )}
               </span>
             </button>
           ))}
         </div>
 
+        <div className="any-vehicle">
+          <label htmlFor="any-vehicle">Or send any {slot.role}:</label>
+          <select id="any-vehicle" value={other} onChange={(e) => setOther(e.target.value)} disabled={sending}>
+            <option value="" disabled>Pick one</option>
+            {slot.anyVehicle.map((a) => (
+              <option key={a.vehicle} value={a.vehicle}>{a.vehicle} · {a.note}</option>
+            ))}
+          </select>
+          <button disabled={!other || sending} onClick={() => choose(other)}>Send {other || ""}</button>
+        </div>
+
         {decision.failed.map((line) => (
           <p key={line} className="failed"><XIcon />{line}</p>
         ))}
+
+        {(slot.evidence.length > 0 || slot.reason) && (
+          <details className="evidence" open>
+            <summary>Evidence</summary>
+            {slot.reason && <p className="evidence-reason">{slot.reason}</p>}
+            <ul>
+              {slot.evidence.map((l, i) => (
+                <li key={`${l.claim_id ?? i}-${l.checker}`} className={`result-${l.result}`}>
+                  <span className="mono">{l.claim}</span>
+                  <span className="evidence-check">
+                    {l.checker ? `checked by ${l.checker}` : "no checker"}: <b>{l.result}</b>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         {sending && <p className="voice-note">Sending your decision…</p>}
         {error && <p className="failed"><XIcon />Could not send the decision: {error}</p>}
       </div>

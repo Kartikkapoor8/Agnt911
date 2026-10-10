@@ -1,8 +1,17 @@
-// The three judge controls in backend/agnt911/engine/api.py. GET /state lives in useWorldState.
+// The judge controls in backend/agnt911/engine/api.py. GET /state lives in useWorldState.
+
+import type { IncidentType, Location } from "./types";
 
 const BASE = "/api"; // Vite proxies /api to the backend
 
 export type Mode = "protected" | "baseline";
+
+/** A non-2xx reply. status lets callers tell a missing route (404) from a rejected request. */
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
 
 /** Turn a FastAPI error body ({detail: string} or a 422 list) into one readable line. */
 async function errorText(res: Response): Promise<string> {
@@ -23,7 +32,7 @@ async function post(path: string, body: unknown): Promise<unknown> {
   } catch {
     throw new Error("Backend not reachable");
   }
-  if (!res.ok) throw new Error(await errorText(res));
+  if (!res.ok) throw new ApiError(res.status, await errorText(res));
   return res.json();
 }
 
@@ -45,4 +54,17 @@ export function postMode(mode: Mode): Promise<unknown> {
 /** Send the human's choice of vehicles for the escalated calls (POST /resolve). */
 export function postResolve(assignments: Record<string, string | null>): Promise<unknown> {
   return post("/resolve", { assignments });
+}
+
+/** A call the judge drops on the map. */
+export interface NewIncident {
+  type: IncidentType;
+  severity: number;
+  location: Location;
+  label: string;
+}
+
+/** Add a call where the judge dropped it (POST /incident). The backend has no such route yet, so expect a 404. */
+export function postIncident(incident: NewIncident): Promise<unknown> {
+  return post("/incident", incident);
 }

@@ -1,11 +1,24 @@
 import { useState } from "react";
-import { postInject, postMode, postResolve, type InjectRequest, type Mode } from "./api";
+import { ApiError, postIncident, postInject, postMode, postResolve, type InjectRequest, type Mode } from "./api";
+import { toast } from "./toast";
+import type { IncidentType, Location } from "./types";
 import { useWorldState } from "./useWorldState";
 import { LandingPage } from "./components/LandingPage";
 import { LivePage } from "./components/LivePage";
-import { ResultsPlaceholder } from "./components/ResultsPlaceholder";
 
-type Page = "landing" | "live" | "results";
+type Page = "landing" | "live";
+
+/** A dropped call is sent at severity 4 with a label that says where it came from. */
+async function dropIncident(type: IncidentType, location: Location) {
+  const label = `${type[0].toUpperCase()}${type.slice(1)} call dropped by the judge`;
+  try {
+    await postIncident({ type, severity: 4, location, label });
+    toast(`Placed a ${type} call.`, "ok");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) toast("POST /incident is not on the backend yet (404), so the call was not placed.", "error");
+    else toast(`Could not place the call: ${err instanceof Error ? err.message : String(err)}`, "error");
+  }
+}
 
 /** Top-level app: owns the polled state, the current page, and the selected vehicle. */
 export function App() {
@@ -34,20 +47,11 @@ export function App() {
     onSetMode: async (mode: Mode) => void (await postMode(mode)),
     onInject: async (req: InjectRequest) => void (await postInject(req)),
     onResolve: async (assignments: Record<string, string | null>) => void (await postResolve(assignments)),
+    onDropIncident: (type: IncidentType, at: Location) => void dropIncident(type, at),
   };
 
-  if (page === "results") return <ResultsPlaceholder onBack={() => setPage("live")} />;
   if (page === "live") {
-    return (
-      <LivePage
-        state={state}
-        stale={error !== null}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        onEndRun={() => setPage("results")}
-        {...handlers}
-      />
-    );
+    return <LivePage state={state} stale={error !== null} selectedId={selectedId} onSelect={setSelectedId} {...handlers} />;
   }
   // The backend has no start/reset endpoint: the scripted run starts with the server, so Start run just opens the live page.
   return <LandingPage state={state} stale={error !== null} onStart={() => setPage("live")} />;
