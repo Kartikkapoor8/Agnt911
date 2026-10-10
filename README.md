@@ -94,41 +94,33 @@ Vehicles use real lat/lng and straight-line distance; they move toward targets i
 
 ## Running it
 
-Greg's core backend is implemented. Python 3.12 or newer is required:
+The integrated backend uses the shared package under `backend/`. Python 3.12 or
+newer is required:
 
 ```bash
+cd backend
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pip install -e .
 .venv/bin/python -m pytest -q
-.venv/bin/python -m uvicorn agnt911.api:app --host 127.0.0.1 --port 8000
+.venv/bin/python -m uvicorn agnt911.engine.api:app --host 127.0.0.1 --port 8000
 ```
 
-Run these commands from the repository root. Keep one server worker: the world is
-in memory. The server starts seven vehicles and five incidents in San Jose,
-advances simulation time, serves `GET /state`, and accepts `POST /inject`,
-`POST /mode`, and `POST /resolve`. Vehicles move only after a committed assignment.
-No API key is needed to run and test the core.
+The default fake LLM runs the team's actual negotiation protocol without an API
+key. The engine loads the scripted San Jose scenario, applies committed dispatches,
+moves vehicles, signs claims/bids/votes, and writes JSONL logs. Matthew can poll
+`GET /state` every 500 ms. Judge controls are `POST /inject` with `{vehicle_id,
+text}`, `POST /mode`, and `POST /resolve`.
 
-The agent, negotiation, verification, and frontend modules are still integration
-work. Until an adapter is connected, `/state` explicitly reports `unconfigured`;
-the server does not dispatch vehicles, identify lies, or invent metrics.
+The trust implementation is still a stub: no attack detection or production
+metrics are claimed. The default fake LLM also ignores injected instructions.
+`/state.integration` reports these limits. Real Anthropic calls require
+`AGNT911_LLM=real` and a securely supplied `ANTHROPIC_API_KEY`; they were not used
+for integration validation.
 
-To connect Kartik and Chris's modules, set `AGNT911_ADAPTER` to an importable module
-exporting `agents` and `run_protocol`. See [schema.md](schema.md) for the callback,
-message, state, and endpoint contracts. Matthew can poll `/state` every 500 ms.
-The default CORS origins cover Vite on localhost/127.0.0.1 port 5173; override the
-comma-separated `AGNT911_CORS_ORIGINS` for another local development origin.
-
-JSONL runs are written to ignored `logs/` by default. Set `AGNT911_LOG_DIR` to
-another directory if needed. A mode change resets the physical scenario and
-preserves previous metrics for comparison. The adapter implements the baseline
-policy and resets its own per-run state. Spot checks receive a per-run seeded RNG
-(default seed 911, configurable with `AGNT911_SEED`). Logs include tick and round
-numbers and separate claim, verification, trust, dispatch, and incident events.
-
-The injection, mode, and human-resolution endpoints are unauthenticated judge
-controls for the laptop demo. Bind to loopback as above. Add authentication before
-exposing these controls on a public deployment.
+See [the engine integration guide](backend/agnt911/engine/README.md) for endpoint
+shapes, startup settings, the branch comparison, logs, and remaining work. Shared
+models remain in [schema.md](schema.md) and `backend/agnt911/models.py`. Run one
+worker and bind to loopback for the unauthenticated laptop judge controls.
 
 ## Team
 
