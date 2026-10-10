@@ -10,7 +10,7 @@ import random
 import time
 import uuid
 
-from .. import protocol
+from .. import llm, protocol
 from ..agents import LLMFn
 from ..fake_llm import fake_llm, split_user_message
 from ..models import Incident, Plan, World
@@ -67,6 +67,7 @@ class Engine:
         self.time_s, self.decision = 0.0, 0
         self.rng = random.Random(self.seed)
         self.bus = MessageBus(self.world.vehicles, self.run_id)
+        llm.reset_call_count()  # AGNT911_MAX_CALLS is per process; give each run the full budget.
         self.log = RunLog(self.log_dir, self.run_id)
         self.events, self.checks = deque(maxlen=500), deque(maxlen=500)
         self.plans, self.metrics, self.timing, self._coverage_roles = {}, {}, {}, {}
@@ -238,7 +239,8 @@ class Engine:
                         self.world.recent_messages = active_bus.history()
                         self._log(message.kind, round=message.round, message=message.model_dump())
 
-                snapshot.recent_messages = SignedHistory(active_bus.history(), active_bus, decision, on_message)
+                # Agents see the last 100 signed messages; /state keeps the full bus history via on_message.
+                snapshot.recent_messages = SignedHistory(active_bus.history()[-100:], active_bus, decision, on_message)
                 self.last_round_status = "running"
             token = decision_rng.set(self.rng)
             try:

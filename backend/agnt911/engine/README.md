@@ -140,9 +140,9 @@ this RNG. Wall-clock movement and live LLM replies are not deterministic.
 
 ## Remaining work and limits
 
-- `agnt911.trust` is absent in the inspected main revision. The unchanged protocol
-  falls back to `trust_stub`, which verifies nothing and leaves trust unchanged.
-  `/state.integration.trust_stub` is true. HMAC authenticates transport; it does
+- Chris's `agnt911.trust` is on main (f3c5d2b), so protocol no longer falls back to
+  `trust_stub` and `/state.integration.trust_stub` is false. Two engine tests pin
+  the stub on purpose. HMAC authenticates transport; it does
   not prove claim truth or Byzantine tolerance. Test-only trust fixtures are
   labeled fakes, not production security.
 - The default fake LLM is honest and trusts its own view, so a corrupted sensor
