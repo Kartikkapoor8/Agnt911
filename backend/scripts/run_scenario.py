@@ -1,7 +1,7 @@
 """Run the scripted demo scenario through the engine, stepping 1 s per tick, and print the typed event stream.
 
 Real Claude when ANTHROPIC_API_KEY is set (env or backend/.env), the fake LLM otherwise or with --mock.
-A human escalation is auto-resolved with the first offered option so the run can continue (and says so).
+A human escalation is auto-resolved by scripts/_demo.py so the run can continue (and says so).
 Usage, from backend/:  .venv/bin/python scripts/run_scenario.py --until 160 --show 55-90 [--mock]
 """
 
@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from agnt911 import llm
 from agnt911.engine.runtime import Engine
 from agnt911.fake_llm import fake_llm
+from _demo import auto_resolve
 
 
 def describe(event: dict) -> str:
@@ -31,22 +32,6 @@ def describe(event: dict) -> str:
     return f"t{event['tick']:>4}  {event['type']:<22} {who:<8} {data}"
 
 
-async def auto_resolve(engine: Engine) -> str | None:
-    """Answer a pending human escalation with the first option per stuck role, keeping the plan's other roles.
-
-    Returns None when an escalation offers no options, so there is nothing to pick.
-    """
-    assignments = {}
-    for plan in engine.escalation["plans"]:
-        ev = plan["evidence"] or {}
-        picks = list(plan["assigned"]) + [e["options"][0] for e in [ev, *ev.get("also", [])] if e.get("options")]
-        if not picks:
-            return None
-        assignments.update({vid: plan["incident"] for vid in picks})
-    await engine.resolve(assignments)
-    return f"auto-resolved escalation with {assignments}"
-
-
 async def run(until: int, real: bool) -> Engine:
     """Step the demo to tick `until`, negotiating whenever something is pending."""
     engine = Engine(log_dir=Path("logs"), llm_fn=None if real else fake_llm)
@@ -56,9 +41,9 @@ async def run(until: int, real: bool) -> Engine:
             if engine.escalation is not None:
                 answer = await auto_resolve(engine)
                 if answer is None:
-                    print(f"  tick {engine.world.tick}: escalation with no options to pick; stopping here")
+                    print(f"  tick {engine.world.tick}: escalation with nobody to send; stopping here")
                     break
-                print(f"  tick {engine.world.tick}: {answer}")
+                print(f"  tick {engine.world.tick}: auto-resolved escalation (stand-in for the human): {answer}")
             await engine.step(1.0)
             if engine.world.tick % 10 == 0:
                 print(f"  tick {engine.world.tick}: {len(engine.world.events)} events, "

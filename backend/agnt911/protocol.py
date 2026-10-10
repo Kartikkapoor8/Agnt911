@@ -401,11 +401,11 @@ def _resolve_all(
     checks: list[dict],
 ) -> list[Plan]:
     """Resolve incidents highest severity first so no vehicle wins twice; return plans in the original order."""
-    taken: set[str] = set()
+    taken: dict[str, str] = {}  # vehicle id -> the incident that won it earlier in this round
     plans: dict[str, Plan] = {}
     for incident in sorted(incidents, key=lambda i: -i.severity):  # stable: ties keep incident order
         plan = _resolve(world, incident, bids, options, votes, claims, checks, taken)
-        taken.update(plan.assigned)
+        taken.update(dict.fromkeys(plan.assigned, incident.id))
         _emit_plan(world, plan)
         plans[incident.id] = plan
     return [plans[i.id] for i in incidents]
@@ -415,7 +415,8 @@ def _emit_plan(world: World, plan: Plan) -> None:
     """Emit one event per plan: escalated_to_human, plan_committed (consensus or dispatcher), or plan_no_consensus."""
     if plan.escalated:
         emit(world, "escalated_to_human", incident=plan.incident, options=plan.evidence.get("options", []),
-             evidence=plan.evidence.get("evidence", {}), role=plan.evidence.get("role"))
+             evidence=plan.evidence.get("evidence", {}), role=plan.evidence.get("role"),
+             contested=plan.evidence.get("contested", {}))
         return
     kind = "plan_committed" if plan.consensus or world.baseline else "plan_no_consensus"
     emit(world, kind, incident=plan.incident, assigned=plan.assigned, tally=plan.tally,
@@ -432,7 +433,7 @@ def _resolve(
     votes: dict[Slot, list[Vote]],
     claims: list[Claim],
     checks: list[dict],
-    taken: set[str],
+    taken: dict[str, str],
 ) -> Plan:
     """Fill each required role of one incident from the options still free, and return its Plan."""
     plan = Plan(
@@ -460,7 +461,7 @@ def _resolve(
             winner, consensus, escalation = (free[0].vehicle if free else None), False, None
         else:
             winner, consensus, tally, escalation = _resolve_role(
-                world, incident, role, options[slot], free, votes.get(slot, []), claims, checks)
+                world, incident, role, options[slot], free, votes.get(slot, []), claims, checks, taken)
             tally_all.update(tally)
         if escalation:
             escalations.append(escalation)
@@ -491,7 +492,7 @@ def _resolve(
     })
 
 
-def _incumbent(world: World, incident: Incident, role: str, taken: set[str]) -> str | None:
+def _incumbent(world: World, incident: Incident, role: str, taken: dict[str, str]) -> str | None:
     """Return the trusted vehicle of this role already en route to or on scene at the incident, if it is still free to keep."""
     return next((v.id for v in sorted(world.vehicles.values(), key=lambda v: v.id)
                  if v.type == role and v.target_incident == incident.id and v.status in ("en_route", "on_scene")
@@ -503,7 +504,7 @@ def _resolve_time_fallback(
     incident: Incident,
     bids: dict[tuple[str, str], Bid],
     options: dict[Slot, list[Bid]],
-    taken: set[str],
+    taken: dict[str, str],
 ) -> dict | None:
     """For a minor incident left empty at resolve time, take the best free bid of the next role in its list.
 
@@ -529,8 +530,13 @@ def _resolve_role(
     votes: list[Vote],
     claims: list[Claim],
     checks: list[dict],
+    taken: dict[str, str],
 ) -> tuple[str | None, bool, dict[str, float], dict | None]:
-    """Tally one role's votes among the options still free and return (winner, consensus, tally, escalation)."""
+    """Tally one role's votes among the options still free and return (winner, consensus, tally, escalation).
+
+    If every option was won by a higher-severity incident this round, the human is shown those options
+    anyway, marked contested with the incident holding each: the choice is which call gets the vehicle.
+    """
     tally = {b.vehicle: 0.0 for b in free}
     for vote in votes:
         choice = voted_on[vote.option_index].vehicle
@@ -544,13 +550,15 @@ def _resolve_role(
     if leader is not None and honest_total > 0 and tally[leader] > threshold:
         return leader, True, tally, None
     if incident.severity >= ESCALATE_SEVERITY:
+        contested = {b.vehicle: taken[b.vehicle] for b in voted_on if b.vehicle in taken} if not free else {}
+        shown = voted_on if contested else free
         decision = trust.should_escalate({
             "incident": incident.id,
             "severity": incident.severity,
             "role": role,
             "round": RESOLVE,
-            "options": [b.model_dump() for b in free],
-            "tally": tally,
+            "options": [b.model_dump() for b in shown],
+            "tally": {**dict.fromkeys(contested, 0.0), **tally},
             "honest_total": honest_total,
             "threshold": threshold,
             "votes": [v.model_dump() for v in votes],
@@ -558,7 +566,7 @@ def _resolve_role(
             "checks": checks,  # lets should_escalate name who checked each contradicting claim
         })
         if decision:
-            return None, False, tally, {"role": role, **decision}
+            return None, False, tally, {"role": role, **decision, **({"contested": contested} if contested else {})}
     return leader, False, tally, None
 
 

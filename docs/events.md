@@ -18,7 +18,7 @@ One line per type: what it carries, and the animation it is meant to drive.
 - `trust_changed` (protocol): `vehicle`; data `old`, `new`, `reason`. Trust bar animates from old to new, and red delta text (for example "-0.3") floats up from the card.
 - `vehicle_untrusted` (protocol): `vehicle`; data `trust`. Marker goes blue to red, pulses once, and is isolated: its lines are cut and its card is dimmed.
 - `vehicle_trusted_again` (protocol): `vehicle`; data `trust`. Marker goes red to blue and reconnects, with a single soft pulse.
-- `escalated_to_human` (protocol): `incident`; data `options` (vehicle ids), `evidence` (votes, contradicting claims), `role`. Map dims, the incident pin glows, and the human popup opens with the options and the evidence.
+- `escalated_to_human` (protocol): `incident`; data `options` (vehicle ids), `evidence` (votes, contradicting claims), `role`, `contested` (vehicle id to the call already holding it, when the only options were taken by another call this round). Map dims, the incident pin glows, and the human popup opens with the options and the evidence.
 - `human_resolved` (engine): data `assignments` (vehicle id to incident id). Popup closes, and solid route lines are drawn for the human's choice with a "human" badge.
 - `vehicle_arrived` (engine): `vehicle`, `incident`. Marker settles on the pin with a small bounce, and the route line turns solid.
 - `incident_discredited` (engine): `vehicle` (the police car that found nothing), `incident`; data `source_id`, `verifier`, `credibility_old`, `credibility_new`. The pin cracks and turns hatched grey with a "false report" stamp, and the caller's credibility meter drops. An `incident_resolved` for the same call follows.

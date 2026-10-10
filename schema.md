@@ -264,6 +264,8 @@ Scenario presets are `{"id", "label", "preset": {"kind": ...}}`. Scenario inject
 
 Bids are checked too: the protocol hands each bid to `trust.check_claim` as an `observation` of that incident carrying `eta_seconds`, sent from the bidder's real position. An ETA no vehicle could drive (below distance / 30 m/s, with 200 m slack) is contradicted, lowers trust, and that bid is left out of the vote. Bid checks appear as `claim_verified` events with `subject: "bid"`; they are not in `plan.checks`, which must match signed claim messages.
 
+When a severity 4-5 role ends with nobody only because every option was won by a higher-severity call earlier in the same round, the human is still shown those options, and the escalation carries `contested: {vehicle id: incident holding it}` (the "two critical calls, one ambulance" choice). A human resolution may move a vehicle off another call; that call goes back to the fleet. The model never sees the code-filled `kind` field: it is stripped from the schema in the prompt and from the reply before validation.
+
 When a renegotiation leaves a role with nobody (no options, no winner, no escalation), the trusted vehicle already en route to or on scene at that incident keeps the role (`plan.evidence.kept: {role: vehicle id}`), so a re-run never silently drops it.
 
 ## Fake calls and callers

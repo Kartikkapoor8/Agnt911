@@ -1,5 +1,6 @@
 """call_claude with a fake client: parsing, retry, and no network."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -124,3 +125,18 @@ def test_round_models_through_a_full_negotiation(monkeypatch):
     }
     assert llm.call_count() == len(client.models) == 21
     assert llm.model_for("no round here") == llm.MODEL
+
+
+def test_kind_is_hidden_from_the_model_and_filled_in_code(monkeypatch):
+    """The schema the model sees has no "kind"; a reply that writes kind anyway still validates, kind set by code."""
+    from agnt911.protocol import ProposeOutput
+
+    assert '"kind"' not in json.dumps(llm.model_schema(ProposeOutput))
+    reply = ('{"claims": [{"kind": "observation", "id": "x", "tick": 0, "vehicle": "F2", "type": "observation", '
+             '"location": {"lat": 37.33, "lng": -121.89}, "confidence": 0.5, "reasoning": "r"}], '
+             '"bids": [{"kind": "claim", "vehicle": "F2", "incident": "I4", "eta_seconds": 60, "capability_match": 0.9, '
+             '"cost_to_district": 0.1, "confidence": 0.8, "reasoning": "r"}]}')
+    client = use(monkeypatch, [reply])
+    out = llm.call_claude("s", "u", ProposeOutput)
+    assert len(client.calls) == 1 and out.claims[0].kind == "claim" and out.bids[0].kind == "bid"
+    assert '"kind"' not in client.calls[0]["system"]

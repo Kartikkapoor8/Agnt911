@@ -21,6 +21,8 @@ def test_check_scenario_passes_on_the_demo():
     out = subprocess.run([sys.executable, "scripts/check_scenario.py"], cwd=BACKEND, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "PASS" in out.stdout
+    # the t140 beat: two severity 5 calls, one free trusted ambulance (A2), and the human is asked about I7
+    assert "t140 I7: options ['A2'], contested {'A2': 'I6'}" in out.stdout
 
 
 def test_renegotiation_keeps_a_vehicle_already_en_route():
@@ -99,3 +101,25 @@ def test_inject_api_takes_fake_call_without_a_vehicle(tmp_path):
         assert state["callers"] == {"caller-1": 1.0}
         assert state["incidents"]["X1"]["source"] == "operator" and not state["incidents"]["X1"]["false_report"]
         assert state["compromised"] == []
+
+
+def test_human_may_move_a_vehicle_off_another_call_and_that_call_is_renegotiated(tmp_path):
+    """At the t140 beat the judge sends A2 to I7 instead of I6; I6 goes back to the fleet."""
+    async def scenario():
+        engine = Engine(tmp_path, llm_fn=fake_llm)
+        try:
+            while engine.escalation is None:
+                await engine.run_round()
+                if engine.escalation is None:
+                    await engine.step(1.0)
+            assert engine.world.tick == 140
+            [plan] = engine.escalation["plans"]
+            assert plan["incident"] == "I7" and plan["evidence"]["contested"] == {"A2": "I6"}
+            await engine.resolve({"A2": "I7"})
+            assert engine.world.vehicles["A2"].target_incident == "I7"
+            assert engine.world.incidents["I6"].status == "open" and "I6" in engine._pending
+            human = [e for e in engine.world.events if e.type == "human_resolved"]
+            assert human and human[-1].data["assignments"] == {"A2": "I7"}
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())

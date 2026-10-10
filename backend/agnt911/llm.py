@@ -19,6 +19,9 @@ MAX_TOKENS = 4000
 # Hard limit on API requests per process (retries included); override with AGNT911_MAX_CALLS.
 DEFAULT_MAX_CALLS = 500
 LOG_EVERY = 50
+# Message fields the code fills in. They are hidden from the schema the model sees, and any value the
+# model writes anyway is dropped before validation, so the Pydantic default applies.
+CODE_FILLED_FIELDS = ("kind",)
 # Sonnet 5.5 rejects temperature; effort is the only knob. Low keeps rounds fast for a short JSON reply.
 # Determinism comes from our code: scoring, voting and trust are plain Python.
 EFFORT = "low"
@@ -97,12 +100,40 @@ def extract_json(text: str) -> str:
     return text
 
 
+def model_schema(response_model: type[BaseModel]) -> dict:
+    """Return response_model's JSON schema without the code-filled fields, for the model to follow."""
+    schema = response_model.model_json_schema()
+    for definition in [schema, *schema.get("$defs", {}).values()]:
+        for field in CODE_FILLED_FIELDS:
+            definition.get("properties", {}).pop(field, None)
+            if field in definition.get("required", []):
+                definition["required"].remove(field)
+    return schema
+
+
+def drop_code_filled(text: str) -> str:
+    """Remove code-filled fields from the claims, bids and vote in a reply, so a stray value cannot fail validation."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if not isinstance(data, dict):
+        return text
+    messages = [m for key in ("claims", "bids") for m in (data.get(key) or []) if isinstance(m, dict)]
+    if isinstance(data.get("vote"), dict):
+        messages.append(data["vote"])
+    for message in messages:
+        for field in CODE_FILLED_FIELDS:
+            message.pop(field, None)
+    return json.dumps(data)
+
+
 def call_claude(system: str, user: str, response_model: type[T]) -> T:
     """Ask Claude for JSON matching response_model, validate it, and retry once on failure.
 
     The model comes from model_for(). Every request, retries included, counts against call_limit().
     """
-    schema = json.dumps(response_model.model_json_schema())
+    schema = json.dumps(model_schema(response_model))
     system_full = (
         f"{system}\n\nRespond with a single JSON object that matches this JSON schema, "
         f"with no other text:\n{schema}"
@@ -124,7 +155,7 @@ def call_claude(system: str, user: str, response_model: type[T]) -> T:
             raise RuntimeError(f"Claude declined this turn: {getattr(reply, 'stop_details', None)}")
         text = "".join(b.text for b in reply.content if getattr(b, "type", "") == "text")
         try:
-            return response_model.model_validate_json(extract_json(text))
+            return response_model.model_validate_json(drop_code_filled(extract_json(text)))
         except ValidationError as exc:
             error = exc
             messages = messages + [

@@ -219,7 +219,7 @@ class Engine:
                 self._log("dispatch", vehicle_id=vid, previous_target=before[vid],
                           target_incident=iid, source=source)
 
-    def _plan_assignments(self, plans: list[Plan]) -> dict:
+    def _plan_assignments(self, plans: list[Plan], human: bool = False) -> dict:
         assignments = {}
         for plan in plans:
             if plan.escalated:
@@ -238,7 +238,7 @@ class Engine:
             vehicle = self.world.vehicles.get(vid)
             if vehicle is None:
                 raise ValueError("Unknown assigned vehicle")
-            if iid and vehicle.target_incident and vehicle.target_incident not in decided:
+            if iid and vehicle.target_incident and vehicle.target_incident not in decided and not human:
                 raise ValueError("Vehicle is already committed to another incident")
         assign(self.world.model_copy(deep=True), assignments)
         return assignments
@@ -475,13 +475,14 @@ class Engine:
                     raise ValueError("Human choice must cover every required role")
                 plans.append(Plan(incident=iid, assigned=selected, round_reached=4,
                                   consensus=False, escalated=False, evidence={"human": True}))
-            changes = self._plan_assignments(plans)
+            changes = self._plan_assignments(plans, human=True)  # a human may move a vehicle off another call
             assign(self.world.model_copy(deep=True), assignments)
             self._commit({**changes, **assignments}, "human")
             for plan in plans:
                 self.plans[plan.incident] = plan
             self.escalation = None
             self._revision += 1
+            self._pending.update(i.id for i in self.world.incidents.values() if i.status == "open")  # calls the human's choice left uncovered
             self._log("human_resolution", assignments=assignments)
             self._emit("human_resolved", assignments=assignments)
 
