@@ -33,6 +33,35 @@ def records(engine):
     return [json.loads(line) for line in engine.log.path.read_text().splitlines()]
 
 
+def test_stepped_clock_commits_slow_rounds_at_scenario_ticks(tmp_path):
+    """Slow agent calls cannot advance the stepped clock or discard scheduled decisions."""
+    async def scenario():
+        def slow(system, user, response_model):
+            time.sleep(0.2)
+            return fake_llm(system, user, response_model)
+        engine = Engine(tmp_path, llm_fn=slow, tick_interval_s=0.01)
+        await engine.start()
+        try:
+            assert len(engine._tasks) == 1
+            async with asyncio.timeout(15):
+                while engine.world.tick < 61:
+                    await asyncio.sleep(0.01)
+            log = records(engine)
+            assert not [r for r in log if r["event"] == "round_discarded"]
+            assert [r["tick"] for r in log if r["event"] == "round_completed"][:5] == [0, 5, 20, 40, 60]
+            assert any(r["event"] == "dispatch" and r["tick"] == 0 for r in log)
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
+def test_invalid_clock_rejected_before_creating_log(tmp_path):
+    """Reject unsupported clock settings before opening a run log."""
+    with pytest.raises(ValueError, match="Clock"):
+        Engine(tmp_path, clock="invalid")
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
 def test_incident_negotiation_dispatch_movement_and_api_end_to_end(tmp_path):
     """A newly created incident runs actual agents/protocol, commits, moves, and appears via HTTP."""
     world = build_fake_world()
@@ -303,7 +332,7 @@ def test_tick_and_api_state_remain_responsive_during_real_agent_interface(tmp_pa
             entered.set()
             assert release.wait(2)
             return fake_llm(system, user, response_model)
-        engine = Engine(tmp_path, world=one_incident(), llm_fn=slow, tick_interval_s=0.005)
+        engine = Engine(tmp_path, world=one_incident(), llm_fn=slow, tick_interval_s=0.005, clock="wall")
         await engine.start()
         try:
             assert await asyncio.to_thread(entered.wait, 1)

@@ -44,18 +44,22 @@ The old `AGNT911_ADAPTER` setting is retired.
 
 Use one server worker because state is in memory. The engine loads the existing
 `scenarios/demo.json`. `AGNT911_SCENARIO` selects another scenario path.
-`AGNT911_TICK_SECONDS` defaults to 1 so the existing 150-tick script runs over
-roughly 150 seconds; each physical step uses elapsed time and 12 m/s movement.
+`AGNT911_CLOCK` defaults to `stepped`: finish negotiation, advance one tick, then
+sleep. `AGNT911_TICK_SECONDS` defaults to 1 simulation second per tick; vehicles
+move at 12 m/s. Negotiation adds wall time to the 150-tick script. Set the clock
+to `wall` to run movement and negotiation concurrently using elapsed time.
 `AGNT911_SEED` overrides the scenario seed. `AGNT911_LOG_DIR` defaults to ignored
 `logs/`. `AGNT911_CORS_ORIGINS` is a comma-separated list of frontend origins.
 
 ## Runtime behavior
 
-The tick task moves vehicles and applies due scenario events. Incident creation,
-severity changes, injection, and service completion queue negotiation. A separate
-task negotiates the pending incidents on a detached World; it does not hold the
-state lock during LLM requests. Normal movement continues during negotiation.
-Changed scenarios discard in-flight results, and results never copy vehicle
+Incident creation, severity changes, injection, and service completion queue
+negotiation. In stepped mode, one task finishes pending negotiations before
+moving vehicles and applying due scenario events. Vehicles pause during LLM
+requests; `/state` remains responsive because negotiation does not hold the
+state lock. Wall mode runs movement and negotiation in separate tasks. External
+changes such as judge injection still discard stale results in either mode;
+scheduled events cannot interrupt stepped rounds. Results never copy vehicle
 positions back from the old snapshot.
 
 The existing fake LLM bids even when busy. The engine's LLM wrapper removes bids

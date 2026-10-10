@@ -27,11 +27,14 @@ class Engine:
                  scenario: dict | None = None, llm_fn: LLMFn | None = fake_llm,
                  protocol_runner=None, tick_interval_s: float = 1.0,
                  round_interval_s: float = 2.0, decision_timeout_s: float = 90.0,
-                 seed: int | None = None):
+                 seed: int | None = None, clock: str = "stepped"):
         """Use existing demo events by default; fake LLM is the safe offline default."""
         for value in (tick_interval_s, round_interval_s, decision_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Intervals and timeout must be positive and finite")
+        if clock not in ("stepped", "wall"):
+            raise ValueError("Clock must be stepped or wall")
+        self.clock = clock
         if world is not None and scenario is not None:
             raise ValueError("Provide world or scenario, not both")
         self.scenario = deepcopy(scenario) if scenario is not None else (load_scenario() if world is None else None)
@@ -412,6 +415,13 @@ class Engine:
             await self.run_round()
             await asyncio.sleep(self.round_interval_s)
 
+    async def _stepped_loop(self):
+        """Finish pending negotiations before advancing simulation time and scenario events."""
+        while True:
+            await self.run_round()
+            await self.step(self.tick_interval_s)
+            await asyncio.sleep(self.tick_interval_s)
+
     async def _supervise(self, loop):
         try:
             await loop()
@@ -421,12 +431,13 @@ class Engine:
             raise
 
     async def start(self) -> None:
-        """Start one movement task and one negotiation task, once."""
+        """Start the selected simulation clock once."""
         if self._closed:
             raise RuntimeError("Engine is closed")
         if not self._tasks:
+            loops = (self._stepped_loop,) if self.clock == "stepped" else (self._tick_loop, self._round_loop)
             self._tasks = [asyncio.create_task(self._supervise(loop))
-                           for loop in (self._tick_loop, self._round_loop)]
+                           for loop in loops]
 
     async def stop(self) -> None:
         """Cancel the engine tasks and flush a final state without exposing injection text."""
