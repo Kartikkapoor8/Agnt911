@@ -48,6 +48,8 @@ Use one server worker because state is in memory. The engine loads the existing
 sleep. `AGNT911_TICK_SECONDS` defaults to 1 simulation second per tick; vehicles
 move at 12 m/s. Negotiation adds wall time to the 150-tick script. Set the clock
 to `wall` to run movement and negotiation concurrently using elapsed time.
+`AGNT911_SERVICE_SECONDS` defaults to 20 simulation seconds of service after
+physical coverage, then responders are released for other calls.
 `AGNT911_SEED` overrides the scenario seed. `AGNT911_LOG_DIR` defaults to ignored
 `logs/`. `AGNT911_CORS_ORIGINS` is a comma-separated list of frontend origins.
 
@@ -73,7 +75,9 @@ Physical coverage is a boolean under `/state.coverage[incident_id]`, with first
 coverage time under `incident_timing`. This avoids adding a new `covered` value to
 the shared incident status enum. `await engine.resolve_incident(id)` explicitly
 finishes a physically covered call, releases vehicles, and reconsiders open calls.
-There is no automatic service timer.
+`step()` also completes physically covered calls after the configured service
+time. Arrival and resolution are separate logged events. After release, current
+`coverage` becomes false; `covered_at_s` retains the historical arrival time.
 
 Baseline runs the team's existing round-1-only dispatcher policy. Its believed
 reports are shown under `reported_handled`, separate from physical coverage and

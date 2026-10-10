@@ -27,14 +27,17 @@ class Engine:
                  scenario: dict | None = None, llm_fn: LLMFn | None = fake_llm,
                  protocol_runner=None, tick_interval_s: float = 1.0,
                  round_interval_s: float = 2.0, decision_timeout_s: float = 90.0,
-                 seed: int | None = None, clock: str = "stepped"):
+                 seed: int | None = None, clock: str = "stepped", service_s: float = 20.0):
         """Use existing demo events by default; fake LLM is the safe offline default."""
         for value in (tick_interval_s, round_interval_s, decision_timeout_s):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Intervals and timeout must be positive and finite")
         if clock not in ("stepped", "wall"):
             raise ValueError("Clock must be stepped or wall")
+        if not math.isfinite(service_s) or service_s <= 0:
+            raise ValueError("Service time must be positive and finite")
         self.clock = clock
+        self.service_s = service_s
         if world is not None and scenario is not None:
             raise ValueError("Provide world or scenario, not both")
         self.scenario = deepcopy(scenario) if scenario is not None else (load_scenario() if world is None else None)
@@ -324,6 +327,12 @@ class Engine:
             for vid in arrivals:
                 self._log("vehicle_arrived", vehicle_id=vid, incident=self.world.vehicles[vid].target_incident)
             self._refresh_coverage()
+            for iid, incident in self.world.incidents.items():
+                covered_at = self.timing[iid]["covered_at_s"]
+                if (incident.status != "resolved" and covered_at is not None
+                    and self.time_s - covered_at >= self.service_s
+                    and covered(self.world, incident, self._coverage_roles.get(iid))):
+                    self._resolve_locked(iid)
             self._apply_events()
 
     async def add_incident(self, data: dict) -> None:
@@ -365,13 +374,19 @@ class Engine:
                 return
             if not covered(self.world, incident, self._coverage_roles.get(incident_id)):
                 raise ValueError("Incident is not physically covered")
-            self._commit({v.id: None for v in self.world.vehicles.values()
-                          if v.target_incident == incident_id}, "incident_resolved")
-            incident.status = "resolved"
-            self.timing[incident_id]["resolved_at_s"] = self.time_s
-            self._pending.update(i.id for i in self.world.incidents.values() if i.status == "open")
-            self._revision += 1
-            self._log("incident_resolved", incident=incident_id)
+            self._resolve_locked(incident_id)
+
+    def _resolve_locked(self, incident_id: str) -> None:
+        """Finish a covered call while the state lock is held, releasing its responders."""
+        incident = self.world.incidents[incident_id]
+        self._commit({v.id: None for v in self.world.vehicles.values()
+                      if v.target_incident == incident_id}, "incident_resolved")
+        incident.status = "resolved"
+        self.timing[incident_id]["resolved_at_s"] = self.time_s
+        self._pending.discard(incident_id)
+        self._pending.update(i.id for i in self.world.incidents.values() if i.status == "open")
+        self._revision += 1
+        self._log("incident_resolved", incident=incident_id)
 
     async def resolve(self, assignments: dict[str, str | None]) -> None:
         """Apply a compatible human plan for all pending escalations and resume the loops."""

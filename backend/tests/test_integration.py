@@ -110,19 +110,22 @@ def test_vehicles_move_toward_assigned_incidents(run):
             assert gap_after <= gap_before + 1e-6
             moved += gap_after < gap_before
     assert moved > 20
-    assert history[-1].vehicles["A1"].status == "on_scene"
+    assert any(r["event"] == "vehicle_arrived" and r["vehicle_id"] == "A1" for r in run["log"])
 
 
 def test_incident_covered_when_vehicles_arrive(run):
     """I1 (medical) is physically covered once A1, the assigned ambulance, is on scene."""
-    assert run["state"]["coverage"]["I1"] is True
+    assert any(w.vehicles["A1"].status == "on_scene" and w.vehicles["A1"].target_incident == "I1"
+               for w in run["history"])
     assert run["state"]["incident_timing"]["I1"]["covered_at_s"] is not None
 
 
-@pytest.mark.xfail(strict=True, reason="engine records coverage; only resolve_incident() resolves, nothing calls it")
 def test_incident_resolved_when_vehicle_arrives(run):
-    """CLAUDE.md demo: a call is resolved once its vehicles arrive."""
+    """A covered call resolves after service time and releases its responders."""
     assert run["state"]["incidents"]["I1"]["status"] == "resolved"
+    timing = run["state"]["incident_timing"]["I1"]
+    assert timing["resolved_at_s"] - timing["covered_at_s"] >= run["engine"].service_s
+    assert all(v["target_incident"] != "I1" for v in run["state"]["vehicles"].values())
 
 
 def test_pileup_escalation_retriggers_negotiation_for_I3(run):

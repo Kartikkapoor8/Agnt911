@@ -126,6 +126,39 @@ def test_movement_arrival_coverage_and_resolution(tmp_path):
     asyncio.run(scenario())
 
 
+def test_service_timer_releases_and_reuses_vehicle(tmp_path):
+    """Only physical coverage starts service; completion frees a unit for the next call."""
+    async def scenario():
+        world = one_incident()
+        world.incidents["I1"].location = world.vehicles["A1"].location.model_copy()
+        engine = Engine(tmp_path, world=world)
+        try:
+            await engine.run_round()
+            assert engine.timing["I1"]["covered_at_s"] == 0
+            await engine.step(19)
+            assert engine.world.incidents["I1"].status == "assigned"
+            await engine.add_incident({**world.incidents["I1"].model_dump(), "id": "N1"})
+            await engine.step(1)
+            assert engine.world.incidents["I1"].status == "resolved"
+            assert engine.world.vehicles["A1"].status == "free"
+            assert engine.world.incidents["I1"].assigned == []
+            assert engine.timing["I1"]["resolved_at_s"] == 20
+            assert "N1" in engine._pending
+            await engine.run_round()
+            assert engine.world.vehicles["A1"].target_incident == "N1"
+            assert sum(r["event"] == "incident_resolved" for r in records(engine)) == 1
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("service_s", [0, -1, float("nan"), float("inf")])
+def test_invalid_service_time_rejected(tmp_path, service_s):
+    """Reject service settings that cannot produce a valid completion time."""
+    with pytest.raises(ValueError, match="Service time"):
+        Engine(tmp_path, service_s=service_s)
+
+
 def test_assignment_validation_is_atomic_and_repeated_assignment_keeps_arrival():
     """Invalid plans do not partly apply, and assigning the same target retains on_scene."""
     world = one_incident()

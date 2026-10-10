@@ -57,6 +57,7 @@ def create_app(engine: Engine | None = None) -> FastAPI:
                             llm_fn=fake_llm if llm_mode == "fake" else None,
                             tick_interval_s=float(os.getenv("AGNT911_TICK_SECONDS", "1")),
                             clock=os.getenv("AGNT911_CLOCK", "stepped"),
+                            service_s=float(os.getenv("AGNT911_SERVICE_SECONDS", "20")),
                             seed=int(os.environ["AGNT911_SEED"]) if "AGNT911_SEED" in os.environ else None)
         app.state.engine = active
         await active.start()
