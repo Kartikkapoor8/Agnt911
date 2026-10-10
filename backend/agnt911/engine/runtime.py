@@ -74,6 +74,7 @@ class Engine:
         self.log = RunLog(self.log_dir, self.run_id)
         self.events, self.checks = deque(maxlen=500), deque(maxlen=500)
         self.plans, self.metrics, self.timing, self._coverage_roles = {}, {}, {}, {}
+        self._service_started, self._service_roles = {}, {}
         self._incident_times, self._tick_records = {}, []
         self._checks_this_tick = 0
         self._escalated_this_tick = False
@@ -163,12 +164,14 @@ class Engine:
                 iid = event["incident"]
                 if self.world.incidents[iid].status != "resolved":
                     self.world.incidents[iid].severity = event["severity"]
+                    self._coverage_roles.pop(iid, None)
                     if event.get("label") is not None:
                         self.labels[iid] = event["label"]
                     self._pending.add(iid)
                     self._revision += 1
                     self._log("incident_updated", incident=iid, severity=event["severity"], label=event.get("label"))
                     self._emit("call_escalated", incident=iid, severity=event["severity"], label=event.get("label"))
+        self._refresh_coverage()
 
     def _state(self) -> dict:
         result = self.world.model_dump(exclude={"injections"})
@@ -224,6 +227,7 @@ class Engine:
             if before[vid] != iid:
                 self._log("dispatch", vehicle_id=vid, previous_target=before[vid],
                           target_incident=iid, source=source)
+        self._refresh_coverage()
 
     def _plan_assignments(self, plans: list[Plan], human: bool = False) -> dict:
         assignments = {}
@@ -372,7 +376,15 @@ class Engine:
 
     def _refresh_coverage(self) -> None:
         for iid, incident in self.world.incidents.items():
-            if covered(self.world, incident, self._coverage_roles.get(iid)) and self.timing[iid]["covered_at_s"] is None:
+            roles = tuple(self._coverage_roles.get(iid) or protocol.required_roles(incident))
+            if incident.status == "resolved" or not covered(self.world, incident, list(roles)):
+                self._service_started.pop(iid, None)
+                self._service_roles.pop(iid, None)
+                continue
+            if self._service_roles.get(iid) != roles:
+                self._service_started[iid] = self.time_s
+                self._service_roles[iid] = roles
+            if self.timing[iid]["covered_at_s"] is None:
                 self.timing[iid]["covered_at_s"] = self.time_s
                 self._log("incident_covered", incident=iid)
 
@@ -392,9 +404,9 @@ class Engine:
             # Capture arrivals before service completion releases their responders.
             self._incident_times = trust.track_incidents(self._incident_times, self.world)
             for iid, incident in self.world.incidents.items():
-                covered_at = self.timing[iid]["covered_at_s"]
-                if (incident.status != "resolved" and covered_at is not None
-                    and self.time_s - covered_at >= self.service_s
+                service_started = self._service_started.get(iid)
+                if (incident.status != "resolved" and service_started is not None
+                    and self.time_s - service_started >= self.service_s
                     and covered(self.world, incident, self._coverage_roles.get(iid))):
                     self._resolve_locked(iid)
             self._apply_events()
@@ -443,6 +455,7 @@ class Engine:
                 self.labels[incident_id] = label
             if changes:
                 self._coverage_roles.pop(incident_id, None)
+                self._refresh_coverage()
                 self._pending.add(incident_id)
                 self._revision += 1
             self._log("incident_updated", incident=incident_id, changes=changes, label=label)
@@ -499,6 +512,8 @@ class Engine:
             targets = {**changes, **assignments}
             moved_from = {self.world.vehicles[vid].target_incident for vid, iid in targets.items()
                           if self.world.vehicles[vid].target_incident not in (None, iid)}
+            for plan in plans:
+                self._coverage_roles.pop(plan.incident, None)
             self._commit(targets, "human")
             for plan in plans:
                 self.plans[plan.incident] = plan

@@ -213,6 +213,79 @@ def test_service_timer_releases_and_reuses_vehicle(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("source", ["operator", "scenario"])
+def test_service_restarts_after_required_roles_change(tmp_path, source):
+    """Adding a required police role starts fresh service on its arrival, preserving first coverage."""
+    async def scenario():
+        world = one_incident()
+        incident = world.incidents["I1"]
+        incident.location = world.vehicles["A1"].location.model_copy()
+        incident.type, incident.severity = "crash", 1
+        if source == "scenario":
+            config = {"seed": 911, "map_center": incident.location.model_dump(),
+                      "vehicles": [v.model_dump() for v in world.vehicles.values()],
+                      "events": [{"tick": 0, "type": "incident", "incident": incident.model_dump()},
+                                 {"tick": 2, "type": "escalate", "incident": "I1", "severity": 3}]}
+            engine = Engine(tmp_path, scenario=config)
+        else:
+            engine = Engine(tmp_path, world=world)
+        try:
+            await engine.run_round()
+            assert engine.timing["I1"]["covered_at_s"] == 0
+            await engine.step(5)
+            await engine.step(5)
+            if source == "operator":
+                await engine.update_incident("I1", {"severity": 3})
+            await engine.run_round()
+            assert not covered(engine.world, engine.world.incidents["I1"])
+            await engine.step(100)
+            assert covered(engine.world, engine.world.incidents["I1"])
+            assert engine.world.incidents["I1"].status == "assigned"
+            await engine.step(19)
+            assert engine.world.incidents["I1"].status == "assigned"
+            await engine.step(1)
+            assert engine.world.incidents["I1"].status == "resolved"
+            assert engine.timing["I1"] == {"created_at_s": 0, "covered_at_s": 0, "resolved_at_s": 130}
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
+def test_service_restarts_after_human_moves_responder_away_and_back(tmp_path):
+    """Restored coverage needs a full service interval even when an earlier arrival is recorded."""
+    async def scenario():
+        world = one_incident()
+        world.incidents["I1"].location = world.vehicles["A1"].location.model_copy()
+        def split_new_call(system, user, response_model):
+            output = fake_llm(system, user, response_model)
+            payload, task = split_user_message(user)
+            if task.startswith("Round 3") and "incident N1 " in task:
+                output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
+            return output
+        engine = Engine(tmp_path, world=world, llm_fn=split_new_call)
+        try:
+            await engine.run_round()
+            await engine.step(10)
+            await engine.add_incident({**world.incidents["I1"].model_dump(), "id": "N1"})
+            await engine.run_round()
+            assert engine.escalation is not None
+            await engine.resolve({"A1": "N1"})
+            assert not covered(engine.world, engine.world.incidents["I1"])
+            await engine.step(30)
+            assert engine.world.incidents["N1"].status == "resolved"
+            await engine.run_round()
+            assert engine.world.vehicles["A1"].target_incident == "I1"
+            await engine.step(19)
+            assert engine.world.incidents["I1"].status == "assigned"
+            await engine.step(1)
+            assert engine.world.incidents["I1"].status == "resolved"
+            assert engine.timing["I1"]["covered_at_s"] == 0
+            assert engine.timing["I1"]["resolved_at_s"] == 60
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("service_s", [0, -1, float("nan"), float("inf")])
 def test_invalid_service_time_rejected(tmp_path, service_s):
     """Reject service settings that cannot produce a valid completion time."""
