@@ -62,6 +62,20 @@ def test_invalid_clock_rejected_before_creating_log(tmp_path):
     assert not list(tmp_path.glob("*.jsonl"))
 
 
+def test_api_reads_clock_and_service_settings(tmp_path, monkeypatch):
+    """App startup passes the selected clock and simulation service duration to the engine."""
+    monkeypatch.setenv("AGNT911_LLM", "fake")
+    monkeypatch.setenv("AGNT911_CLOCK", "wall")
+    monkeypatch.setenv("AGNT911_SERVICE_SECONDS", "7.5")
+    monkeypatch.setenv("AGNT911_LOG_DIR", str(tmp_path))
+    app = create_app()
+    with TestClient(app) as client:
+        assert client.get("/state").status_code == 200
+        assert app.state.engine.clock == "wall"
+        assert app.state.engine.service_s == 7.5
+        assert len(app.state.engine._tasks) == 2
+
+
 def test_incident_negotiation_dispatch_movement_and_api_end_to_end(tmp_path):
     """A newly created incident runs actual agents/protocol, commits, moves, and appears via HTTP."""
     world = build_fake_world()
@@ -522,6 +536,41 @@ def test_new_incident_validation_and_snapshot_isolation(tmp_path):
             state = await engine.state()
             state["vehicles"]["A1"]["location"]["lat"] = 0
             assert engine.world.vehicles["A1"].location.lat != 0
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
+def test_labels_persist_outside_feed_and_reset_with_scenario(tmp_path):
+    """Scenario and operator labels survive feed eviction and remain separate from shared models."""
+    async def scenario():
+        engine = Engine(tmp_path)
+        try:
+            for _ in range(41):
+                await engine.step(1)
+            assert (await engine.state())["labels"]["I3"] == "Crash now multi-vehicle pileup"
+            data = {"id": "N1", "type": "medical", "severity": 3,
+                    "location": {"lat": 37.33, "lng": -121.88}, "label": "New call"}
+            await engine.add_incident(data)
+            assert data["label"] == "New call"
+            await engine.update_incident("N1", {"severity": 5, "label": "Critical call"})
+            assert engine.world.incidents["N1"].severity == 5
+            engine._pending.clear()
+            await engine.update_incident("N1", {"label": "Display edit"})
+            assert not engine._pending
+            with pytest.raises(ValueError, match="Label"):
+                await engine.update_incident("N1", {"severity": 1, "label": 123})
+            assert engine.world.incidents["N1"].severity == 5
+            engine.events.clear()
+            state = await engine.state()
+            assert state["labels"]["N1"] == "Display edit"
+            state["labels"]["N1"] = "snapshot edit"
+            assert engine.labels["N1"] == "Display edit"
+            assert "label" not in engine.world.incidents["N1"].model_dump()
+            await engine.set_mode("baseline")
+            state = await engine.state()
+            assert "N1" not in state["labels"] and "I3" not in state["labels"]
+            assert state["labels"]["I1"] == "Cardiac arrest, 1st & Santa Clara"
         finally:
             await engine.stop()
     asyncio.run(scenario())

@@ -70,6 +70,7 @@ class Engine:
         self.log = RunLog(self.log_dir, self.run_id)
         self.events, self.checks = deque(maxlen=500), deque(maxlen=500)
         self.plans, self.metrics, self.timing, self._coverage_roles = {}, {}, {}, {}
+        self.labels: dict[str, str] = {}
         self.reported_handled = {}
         self.escalation = None
         self.last_round_status = "waiting"
@@ -89,6 +90,8 @@ class Engine:
         self.events.append(record)
 
     def _record_created(self, incident: Incident, label: str | None = None) -> None:
+        if label is not None:
+            self.labels[incident.id] = label
         self.timing[incident.id] = {"created_at_s": self.time_s, "covered_at_s": None, "resolved_at_s": None}
         self._log("incident_created", incident=incident.model_dump(), label=label)
 
@@ -119,6 +122,8 @@ class Engine:
                 iid = event["incident"]
                 if self.world.incidents[iid].status != "resolved":
                     self.world.incidents[iid].severity = event["severity"]
+                    if event.get("label") is not None:
+                        self.labels[iid] = event["label"]
                     self._pending.add(iid)
                     self._revision += 1
                     self._log("incident_updated", incident=iid, severity=event["severity"], label=event.get("label"))
@@ -129,6 +134,7 @@ class Engine:
                       mode="baseline" if self.world.baseline else "protected",
                       compromised=list(self.world.injections), checks=list(self.checks),
                       events=list(self.events), plans={iid: p.model_dump() for iid, p in self.plans.items()},
+                      labels=dict(self.labels),
                       metrics=self.metrics, comparison=self.comparison, incident_timing=self.timing,
                       coverage={iid: covered(self.world, inc, self._coverage_roles.get(iid))
                                 for iid, inc in self.world.incidents.items()},
@@ -337,6 +343,10 @@ class Engine:
 
     async def add_incident(self, data: dict) -> None:
         """Introduce a new shared-model call and schedule negotiation."""
+        data = dict(data)
+        label = data.pop("label", None)
+        if label is not None and not isinstance(label, str):
+            raise ValueError("Label must be a string")
         incident = Incident.model_validate(data)
         if incident.status != "open" or incident.assigned:
             raise ValueError("New incidents must be open and unassigned")
@@ -346,12 +356,16 @@ class Engine:
             self.world.incidents[incident.id] = incident
             self._pending.add(incident.id)
             self._revision += 1
-            self._record_created(incident)
+            self._record_created(incident, label)
 
     async def update_incident(self, incident_id: str, changes: dict) -> None:
-        """Re-negotiate a change in incident type or severity without changing shared models."""
-        if not changes or set(changes) - {"type", "severity"}:
-            raise ValueError("Only type and severity can change")
+        """Update type, severity or display label without changing shared models."""
+        if not changes or set(changes) - {"type", "severity", "label"}:
+            raise ValueError("Only type, severity and label can change")
+        changes = dict(changes)
+        label = changes.pop("label", None)
+        if label is not None and not isinstance(label, str):
+            raise ValueError("Label must be a string")
         async with self._lock:
             if incident_id not in self.world.incidents:
                 raise KeyError(incident_id)
@@ -359,10 +373,13 @@ class Engine:
             if incident.status == "resolved":
                 raise ValueError("Incident is already resolved")
             self.world.incidents[incident_id] = incident
-            self._coverage_roles.pop(incident_id, None)
-            self._pending.add(incident_id)
-            self._revision += 1
-            self._log("incident_updated", incident=incident_id, changes=changes)
+            if label is not None:
+                self.labels[incident_id] = label
+            if changes:
+                self._coverage_roles.pop(incident_id, None)
+                self._pending.add(incident_id)
+                self._revision += 1
+            self._log("incident_updated", incident=incident_id, changes=changes, label=label)
 
     async def resolve_incident(self, incident_id: str) -> None:
         """Complete service only after physical coverage, release units, and reconsider open calls."""

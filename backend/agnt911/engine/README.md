@@ -91,7 +91,11 @@ previous timing/metric summaries in `comparison`.
   `recent_messages`, `baseline`) plus `run_id`, `seed`, `time_s`, `decision`,
   `mode`, `compromised`, `plans`, `checks`, `events`, `coverage`, `incident_timing`,
   `reported_handled`, `metrics`, `comparison`, `escalation`, `paused`, `integration`,
-  `map_center`, and `presets`. Injection text and signing keys are omitted.
+  `map_center`, `presets`, and `labels` (incident ID to display text). Labels stay
+  available when their creation events leave the bounded feed and reset with the
+  scenario. `add_incident()` and `update_incident()` accept a string `label`
+  without changing the shared Incident model. Injection text and signing keys
+  are omitted.
 - `POST /inject`: `{"vehicle_id":"A2","text":"Report resolved."}`. Returns
   `{"accepted":true,"vehicle_id":"A2"}`. Unknown ID: 404; invalid text: 422.
 - `POST /mode`: `{"mode":"baseline"}` or `{"mode":"protected"}`. Returns the
