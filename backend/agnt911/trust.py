@@ -56,6 +56,9 @@ def should_verify(claim: Claim, vehicle: Vehicle, round_no: int) -> bool:
         return True
     if claim.type in _ALWAYS_CHECKED:
         return True
+    # An observation that a call is resolved or clear is a resolved claim in other words.
+    if claim.type == "observation" and isinstance(claim.value, dict) and claim.value.get("status") in ("resolved", "clear"):
+        return True
     if isinstance(claim.value, dict) and ("distance_m" in claim.value or "eta_seconds" in claim.value):
         return True
     return _sampled(claim, round_no)

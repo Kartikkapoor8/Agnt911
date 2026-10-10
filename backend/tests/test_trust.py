@@ -332,6 +332,8 @@ def test_suspects_high_stakes_and_numbers_are_always_checked():
         make_claim(world, "A1", "on_scene", "I1"),
         make_claim(world, "A1", "available", value={"distance_m": 9}),
         make_claim(world, "A1", "en_route", "I1", value={"eta_seconds": 60}),
+        make_claim(world, "A1", "observation", "I1", value={"status": "resolved"}),
+        make_claim(world, "A1", "observation", "I1", value={"status": "clear"}),
     ]
     for claim in always:
         assert all(should_verify(claim, sender, n) for n in range(40))
