@@ -71,8 +71,13 @@ At 12 m/s, P1 (dispatched to I3 at tick 5) and F1 (sent to I2 at tick 0) were st
 
 ### 4. Check the human popup live
 
-No escalation fired in either live run, because I5 (the far-east severity-5 call) arrives at tick 150 and the runs stopped at tick 80. The pause and `/resolve` path is covered by `test_human_escalation_pauses_ticks_and_explicit_choice_resumes`. Run the real API to tick 160 once (about 300 calls, now within the per-run budget) and confirm that `/state.paused` goes true and `/resolve` resumes.
+No escalation fired in my two live runs, which stopped at tick 80. Since ea14803 the scenario has an escalation beat at tick 140: two severity-5 medical calls (I6, I7) 600 m apart, with A2 the only trusted free ambulance. `scripts/check_scenario.py` asserts `escalated_to_human` fires there. Run it once against the real API and confirm in the UI that `/state.paused` goes true and `/resolve` resumes the clock.
+
+## Also changed in your files since the audit (kartik-7e, ea14803)
+
+- **`Engine._plan_assignments(plans, human=False)`:** with `human=True`, a vehicle already committed to another call may be moved. Only `resolve()` passes it; protocol rounds still can't steal a committed vehicle.
+- **`Engine.resolve()`:** after a human re-assignment, it re-pends every call left `open` (for example, the call the moved vehicle came from), so the next round renegotiates it.
 
 ## FYI (Kartik's call, not yours)
 
-The tick-60 hijack in `scenarios/demo.json` targets A2, which has been parked at I3 since tick 29. Its "on scene" is therefore true, and in both live runs the fleet caught nothing. A new target and timing are on Kartik's list. If that needs another scenario event type, he'll ask.
+The scenario was redesigned in 5b12021 (a tight map and catchable hijacks). In kartik-7e's real batch run, the fleet caught hijacked A1 at tick 60 and A3 at tick 120.

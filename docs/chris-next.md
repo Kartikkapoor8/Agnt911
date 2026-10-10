@@ -37,7 +37,7 @@ I ran the scripted demo against the real API through tick 80, twice. Both runs u
 - Under the sensor feed, A2 believed I3 was resolved. But it wrote that only in free-form observation fields, such as `{"I3_status_in_my_state": "resolved"}` and a `note` string, never as `value.status`.
 - Even with `value.status: "resolved"`, `_resolution` would return unverifiable, because a suitable vehicle (A2 itself) is at the scene.
 
-Items 2 and 3 below fix this from your side. The scenario target and the observation `value` shape are on Kartik's list from this audit.
+Items 2 and 3 below fix this from your side. Since then, kartik-7e's scenario redesign (5b12021) hijacks vehicles that are away from the incident they claim. In its real batch run, your checks caught A1 at tick 60 and A3 at tick 120, so the demo no longer depends on items 2 and 3.
 
 ## What I changed in your file (1e8f8ec, "audit fixes: trust (Chris)")
 
@@ -121,6 +121,12 @@ Superseded (commit "scenario: tight map, catchable hijacks, fake-call preset, ca
 ### 6. Decide whether an assigned call disproves `sector_clear`
 
 `_open_call_nearby` only counts `status == "open"`, and by tick 120 (F2's scripted hijack) every live call is `assigned`. A false `sector_clear` there can't be contradicted. Under the sensor feed, F2 mostly just stops bidding instead of claiming anything, so this is lower priority. Your call; `test_sector_clear_with_only_assigned_incident_nearby_is_not_contradicted` pins the current rule.
+
+### 7. Escalation reason for a contested option (cosmetic)
+
+Since ea14803, a severity 4-5 role whose options were all won by another call in the same round still escalates. Protocol passes those options to `should_escalate` with tally `0.0` each, so the popup reason reads "A2 leads with 0.0 of 5.0 honest weight". The real choice is which call gets A2. Protocol adds `{"contested": {vehicle: call}}` to the escalation after your function returns, but `round_state` doesn't carry it. Paste:
+
+> Ask Kartik to add `"contested": contested` to the `round_state` dict in `protocol._resolve_role` (one line). Then, in `backend/agnt911/trust.py`, `should_escalate`: when `round_state.get("contested")` is non-empty, set `reason` to `f"{label} (severity {severity}): every option is committed to another call this round ({', '.join(f'{v} on {c}' for v, c in contested.items())}); choose which call gets it"`. Test with a `round_state` whose tally is all 0.0 and whose `contested` is `{"A2": "I6"}`, and assert the reason names I6.
 
 ## What the engine gives you, and what to do meanwhile
 
