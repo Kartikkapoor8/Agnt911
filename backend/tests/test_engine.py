@@ -11,6 +11,7 @@ import pytest
 
 from agnt911 import protocol, trust_stub
 from agnt911.agents import haversine_m
+from agnt911.events import emit
 from agnt911.fake_llm import fake_llm, split_user_message
 from agnt911.fake_world import build_fake_world
 from agnt911.models import Claim, Incident, Location, Plan
@@ -131,7 +132,7 @@ def test_demo_metrics_and_baseline_comparison(tmp_path):
             assert state["metrics"]["checks_total"] > 0
             assert [r["tick"] for r in state["tick_records"]] == list(range(1, 42))
             assert all(r["mode"] == "protected" for r in state["tick_records"])
-            checks = [r for r in records(engine) if r["event"] == "verification"]
+            checks = [r for r in records(engine) if r["event"] == "typed_event" and r["type"] == "claim_verified"]
             assert state["metrics"]["checks_total"] == len(checks)
             assert sum(r["checks"] for r in state["tick_records"]) == len(checks)
             assert len([r for r in records(engine) if r["event"] == "tick_record"]) == 41
@@ -154,6 +155,31 @@ def test_demo_metrics_and_baseline_comparison(tmp_path):
             assert len(baseline["tick_records"]) == 41
             assert all(r["mode"] == "baseline" and r["checks"] == 0 for r in baseline["tick_records"])
             assert baseline["comparison"][-1]["metrics"] == protected_metrics
+        finally:
+            await engine.stop()
+    asyncio.run(scenario())
+
+
+def test_verification_totals_include_bids_and_checks_outside_requested_incident(tmp_path):
+    """Each committed check counts once, including bid ETAs and claims omitted from plan.checks."""
+    async def scenario():
+        engine = Engine(tmp_path)
+        try:
+            await engine.run_round()
+            await engine.add_incident({"id": "N1", "type": "medical", "severity": 3,
+                                      "location": {"lat": 37.3355, "lng": -121.8860}})
+            await engine.run_round()
+            verified = [e for e in engine.world.events if e.type == "claim_verified"]
+            assert any(e.data["subject"] == "bid" for e in verified)
+            assert len(verified) > len(engine.checks)
+            await engine.step(1)
+            state = await engine.state()
+            assert state["metrics"]["checks_total"] == len(verified)
+            assert state["tick_records"][-1]["checks"] == len(verified)
+            await engine.step(1)
+            state = await engine.state()
+            assert state["tick_records"][-1]["checks"] == 0
+            assert state["metrics"]["checks_total"] == len(verified)
         finally:
             await engine.stop()
     asyncio.run(scenario())
@@ -454,6 +480,7 @@ def test_changed_scenarios_discard_in_flight_plans(tmp_path, change):
     async def scenario():
         entered, release = asyncio.Event(), asyncio.Event()
         async def slow(world, incident_ids, llm_fn):
+            emit(world, "claim_verified", subject="bid", claim_id="discarded-bid", result="confirmed")
             entered.set()
             await release.wait()
             return [Plan(incident="I1", assigned=["A1"], round_reached=3, consensus=True, escalated=False)]
@@ -483,6 +510,7 @@ def test_bad_protocol_results_do_not_partially_apply(tmp_path, failure):
     """Bad output or a failed protocol produces an audit failure without committing assignments/trust."""
     async def scenario():
         async def invalid(world, incident_ids, llm_fn):
+            emit(world, "claim_verified", subject="bid", claim_id="failed-bid", result="confirmed")
             if failure == "timeout":
                 await asyncio.Event().wait()
             if failure == "cancel":
@@ -555,7 +583,7 @@ def test_human_escalation_pauses_ticks_and_explicit_choice_resumes(tmp_path):
             state = await engine.state()
             assert state["tick_records"][0]["escalation"] is True
             assert state["metrics"]["escalations"] == 1
-            assert state["metrics"]["checks_total"] == len(engine.checks)
+            assert state["metrics"]["checks_total"] == sum(e.type == "claim_verified" for e in engine.world.events)
             await engine.step()
             state = await engine.state()
             assert state["tick_records"][-1]["escalation"] is False

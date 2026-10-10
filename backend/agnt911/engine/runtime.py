@@ -342,6 +342,8 @@ class Engine:
                 for event in snapshot.events[events_before:]:  # the round's protocol events, only on commit
                     self.world.events.append(event)
                     self._log_event(event)
+                    if event.type == "claim_verified":
+                        self._checks_this_tick += 1
                 for vid, updated in snapshot.vehicles.items():
                     live = self.world.vehicles[vid]
                     if (live.trust, live.untrusted) != (updated.trust, updated.untrusted):
@@ -352,7 +354,6 @@ class Engine:
                 for check in checks.values():
                     self.checks.append(deepcopy(check))
                     self._log("verification", round=check["round"], check=check)
-                self._checks_this_tick += len(checks)
                 for plan in plans:
                     self.plans[plan.incident] = plan.model_copy(deep=True)
                     if not plan.escalated:

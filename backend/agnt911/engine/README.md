@@ -70,6 +70,8 @@ and votes. A unit can bid again for its existing incident during re-negotiation.
 Committed assignments are validated together before applying them. No vehicle
 can receive two simultaneous targets. Protocol-defined minor-incident role
 fallbacks are accepted.
+When a human moves a responder to another call, the previous call is queued
+again if it lacks any required role, even if other responders remain assigned.
 
 Physical coverage is a boolean under `/state.coverage[incident_id]`, with first
 coverage time under `incident_timing`. This avoids adding a new `covered` value to
@@ -78,6 +80,10 @@ finishes a physically covered call, releases vehicles, and reconsiders open call
 `step()` also completes physically covered calls after the configured service
 time. Arrival and resolution are separate logged events. After release, current
 `coverage` becomes false; `covered_at_s` retains the historical arrival time.
+Automatic completion uses a separate timer for continuous physical coverage.
+Losing coverage or changing the required roles restarts that timer; repeating
+the same covered assignment retains it. Scheduled severity changes also clear
+cached minor-incident role fallbacks before coverage is evaluated again.
 
 Baseline runs the team's existing round-1-only dispatcher policy. Its believed
 reports are shown under `reported_handled`, separate from physical coverage and
@@ -95,7 +101,9 @@ all required roles. Creation ticks are retained from the moment calls appear.
 
 `tick_records` provides the run's complete per-tick history of checks, vehicle
 trust, incident outcomes and mode. Each row is also logged as `tick_record` in
-JSONL. Only committed decisions contribute verification counts. During a human
+JSONL. The engine counts every committed `claim_verified` event, including
+bid ETA checks and checks not included in an incident's `Plan.checks`. The signed
+claim-only `checks` list retains its existing contract. During a human
 pause, checks and the escalation flag wait for the next movement tick; they are
 recorded once after the human resolves the escalation. `/mode` archives the
 current metrics in `comparison` and resets rows and counters for the new run.
