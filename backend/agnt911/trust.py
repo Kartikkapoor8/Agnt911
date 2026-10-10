@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 
 from .models import Claim, Incident, Location, Vehicle, World
 
@@ -46,6 +47,17 @@ HARD_INCAPABLE = {
 }
 
 _ALWAYS_CHECKED = ("resolved", "sector_clear", "on_scene")
+# The vehicle types each incident type needs; severity 1-2 needs only the first. Same as protocol.ROLES.
+REQUIRED_ROLES = {
+    "medical": ["ambulance"],
+    "fire": ["fire"],
+    "crash": ["ambulance", "police"],
+    "hazard": ["fire", "police"],
+    "shooting": ["police", "ambulance"],
+}
+# Value keys an observation uses to say which vehicle its numbers describe.
+_SUBJECT_KEYS = ("vehicle", "subject", "target_vehicle", "other")
+_HANDLED = ("resolved", "clear")
 _SCENE_CLAIMS = ("on_scene", "resolved", "observation")
 _EARTH_RADIUS_M = 6_371_000.0
 
@@ -57,7 +69,7 @@ def should_verify(claim: Claim, vehicle: Vehicle, round_no: int) -> bool:
     if claim.type in _ALWAYS_CHECKED:
         return True
     # An observation that a call is resolved or clear is a resolved claim in other words.
-    if claim.type == "observation" and isinstance(claim.value, dict) and claim.value.get("status") in ("resolved", "clear"):
+    if claim.type == "observation" and _says_handled(claim.value):
         return True
     if isinstance(claim.value, dict) and ("distance_m" in claim.value or "eta_seconds" in claim.value):
         return True
@@ -75,8 +87,12 @@ def check_claim(claim: Claim, world: World) -> str:
             return CONTRADICTED if _open_call_nearby(claim, world, sender) else UNVERIFIABLE
         if claim.type != "capability":
             return UNVERIFIABLE
-    elif _numbers_lie(claim, world, sender) or _position_lies(claim, world, sender):
-        return CONTRADICTED
+    else:
+        kind, subject = _subject(claim, world)
+        if kind == "ambiguous" and _has_numbers(claim.value):
+            return UNVERIFIABLE  # numbers about an unclear vehicle: don't blame the sender for them
+        if _numbers_lie(claim, world, subject) or _position_lies(claim, world, sender):
+            return CONTRADICTED
     return _TYPE_RULES[claim.type](claim, world, sender)
 
 
@@ -284,8 +300,47 @@ def _number(value: dict | None, key: str) -> float | None:
     return float(raw)
 
 
+def _subject(claim: Claim, world: World) -> tuple[str, Vehicle | None]:
+    """Say whose position an observation's numbers describe: ("self", sender), ("other", vehicle) or ("ambiguous", None).
+
+    Only observations can be about another vehicle. The value names it (vehicle, subject, target_vehicle or
+    other); without such a key, a single other vehicle id in the reasoning names it. A value naming the
+    sender itself, or naming nobody, means the sender. Two or more candidates is ambiguous.
+    """
+    sender = world.vehicles.get(claim.vehicle)
+    if claim.type != "observation":
+        return "self", sender
+    value = claim.value if isinstance(claim.value, dict) else {}
+    named = {value[key].strip() for key in _SUBJECT_KEYS if isinstance(value.get(key), str)} & set(world.vehicles)
+    if not named:
+        named = {vid for vid in world.vehicles if re.search(rf"\b{re.escape(vid)}\b", claim.reasoning or "")}
+    others = named - {claim.vehicle}
+    if not others:
+        return "self", sender
+    return ("other", world.vehicles[others.pop()]) if len(others) == 1 else ("ambiguous", None)
+
+
+def _has_numbers(value: dict | None) -> bool:
+    """Say if a claim payload carries a distance or an ETA."""
+    return _number(value, "distance_m") is not None or _number(value, "eta_seconds") is not None
+
+
+def _says_handled(value: dict | None) -> bool:
+    """Say if a payload reports the call resolved or clear, under "status" or any key containing "status"."""
+    if not isinstance(value, dict):
+        return False
+    return any(
+        "status" in str(key).lower() and isinstance(raw, str) and raw.strip().lower() in _HANDLED
+        for key, raw in value.items()
+    )
+
+
 def _numbers_lie(claim: Claim, world: World, sender: Vehicle) -> bool:
-    """Catch a distance or ETA far smaller than the real distance allows; overstating is never a lie."""
+    """Catch a distance or ETA far smaller than the real distance allows; overstating is never a lie.
+
+    `sender` is the vehicle the numbers describe: the claim's sender, or for an observation about
+    another vehicle, that vehicle (see _subject).
+    """
     named = _incident(claim, world)
     distance = _number(claim.value, "distance_m")
     if distance is not None:
@@ -340,19 +395,18 @@ def _at_scene(vehicle: Vehicle, incident: Incident) -> bool:
     return parked or _distance_m(vehicle.location, incident.location) <= ON_SCENE_RADIUS_M
 
 
-def _capable_on_scene(world: World, incident: Incident) -> bool:
-    """Say if any vehicle of a suitable type, trusted or not, is physically at the incident."""
-    return any(
-        vehicle.type in ACCEPTABLE_TYPES[incident.type] and _at_scene(vehicle, incident)
-        for vehicle in world.vehicles.values()
-    )
+def _roles_on_scene(world: World, incident: Incident) -> bool:
+    """Say if every vehicle type the incident needs is physically at it (trusted or not)."""
+    needed = REQUIRED_ROLES[incident.type][:1] if incident.severity <= 2 else REQUIRED_ROLES[incident.type]
+    present = {vehicle.type for vehicle in world.vehicles.values() if _at_scene(vehicle, incident)}
+    return set(needed) <= present
 
 
 def _resolution(world: World, incident: Incident) -> str:
-    """Judge "this incident is handled": confirmed if resolved, contradicted if no suitable vehicle is there."""
+    """Judge "this incident is handled": confirmed if resolved, contradicted unless every required role is there."""
     if incident.status == "resolved":
         return CONFIRMED
-    return UNVERIFIABLE if _capable_on_scene(world, incident) else CONTRADICTED
+    return UNVERIFIABLE if _roles_on_scene(world, incident) else CONTRADICTED
 
 
 def _served_now(world: World, incident: Incident) -> bool:
@@ -446,8 +500,14 @@ def _check_observation(claim: Claim, world: World, sender: Vehicle) -> str:
     value = claim.value or {}
     incident = _incident(claim, world)
     if incident is not None:
-        if value.get("status") in ("resolved", "clear") and _resolution(world, incident) == CONTRADICTED:
+        if _says_handled(value) and _resolution(world, incident) == CONTRADICTED:
             return CONTRADICTED
+        kind, subject = _subject(claim, world)
+        distance = _number(value, "distance_m")
+        if kind == "other" and distance is not None:
+            # A report about another vehicle checks out when that vehicle really is that far from the incident.
+            actual = _distance_m(subject.location, incident.location)
+            return CONFIRMED if abs(distance - actual) <= max(OBSERVATION_MATCH_M, 0.25 * actual) else UNVERIFIABLE
         matches = _distance_m(incident.location, claim.location) <= OBSERVATION_MATCH_M
         return CONFIRMED if matches else UNVERIFIABLE
     seen = any(

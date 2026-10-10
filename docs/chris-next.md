@@ -53,58 +53,13 @@ Kartik's 59f0b40 also changed two things you'll see:
 
 ## What's left, in priority order
 
-### 1. An honest vehicle lost trust: a distance to another vehicle was read as a distance to the incident
+### 1-3. Done for you (commit "trust: observations about other vehicles; resolved needs all roles; lenient status read")
 
-This is the one false positive so far, and it costs an honest vehicle trust. It came from kartik-7e's real-API batch run on 5b12021 (`backend/logs/f2823f3cb400472cb9ae6a560c2efb74.jsonl`, not committed).
+Kartik had kartik-7e make these in `trust.py`, since nothing new had landed from you after f3c5d2b. They're done, so don't redo them; review the diff when you're back.
 
-- At tick 120, honest P1 sent observation `d7-P1-r2-c1` with `incident="I5"` and `value={"vehicle": "A2", "status_seen": "en_route", "distance_m": 240, "target": "I5"}`. The 240 m is P1's distance to A2.
-- `_numbers_lie` reads `distance_m` on an observation as the distance to the named incident, which is about 1 km. It returned a lie, `check_claim` returned contradicted (with A2 as witness), and P1 dropped from 1.0 to 0.7.
-- Two more like it and an honest police car goes red on stage.
-
-The rest of that batch behaved as intended:
-- A1 was caught at tick 60 and A3 at tick 120; both went untrusted on the same tick.
-- The bid ETA checks fired on A3 (30 s from 1,520 m) and A1 (0 s on I3 from 742 m).
-
-Paste this into your agent:
-
-> In `backend/agnt911/trust.py`, `_numbers_lie`: an observation's `distance_m` is only about the named incident when the observation isn't about something else.
->
-> At the top of the `distance` branch, skip the check when `claim.type == "observation"` and the value names another subject: any of the keys `"vehicle"`, `"subject"`, `"target_vehicle"` or `"other"`. Leave the `eta_seconds` check alone, because the protocol now sends bids as observations carrying `eta_seconds`, and those must still be checked.
->
-> Add `test_observation_distance_to_another_vehicle_is_not_a_lie`: P1 sends `observation` with `incident="I5"` and `value={"vehicle": "A2", "status_seen": "en_route", "distance_m": 240, "target": "I5"}` from about 1 km from I5, and `check_claim` is not `CONTRADICTED`. This is the exact live claim. Keep `test_understated_distance_is_contradicted` passing for observations whose value has no other-subject key.
-
-### 2. "Resolved" should need every required role on scene
-
-Paste this into your agent:
-
-> In `backend/agnt911/trust.py`, a "resolved" claim (or an observation with status `resolved`/`clear`) is currently plausible whenever any suitable vehicle is within 100 m, including the sender. A hacked ambulance alone at a severity-5 crash, with the police car still en route, can call it resolved and only get "unverifiable".
->
-> Change `_resolution` so it is contradicted unless every required role is physically present:
-> 1. Add a module constant `REQUIRED_ROLES = {"medical": ["ambulance"], "fire": ["fire"], "crash": ["ambulance", "police"], "hazard": ["fire", "police"], "shooting": ["police", "ambulance"]}`. It is the same as `protocol.ROLES`; severity 1-2 needs only the first role.
-> 2. Add a helper:
->    ```python
->    def _roles_on_scene(world, incident):
->        """Say if every vehicle type the incident needs is physically at it."""
->        needed = REQUIRED_ROLES[incident.type][:1] if incident.severity <= 2 else REQUIRED_ROLES[incident.type]
->        present = {v.type for v in world.vehicles.values() if _at_scene(v, incident)}
->        return set(needed) <= present
->    ```
-> 3. In `_resolution`, return `UNVERIFIABLE if _roles_on_scene(world, incident) else CONTRADICTED`.
-> 4. Update the tests that pin the old rule: `test_resolved_with_acceptable_vehicle_on_scene_is_not_contradicted` (I1 is medical, so A1 alone still makes it unverifiable; keep that case) and `test_resolved_counts_untrusted_vehicles_as_physically_present`.
-> 5. Add `test_resolved_at_severe_crash_with_only_the_ambulance_is_contradicted`: make I3 a severity-5 crash, park A2 on it, put P1 300 m away (a witness, but not on scene), and assert that `check_claim` of A2's `resolved I3` is `CONTRADICTED`. Also assert the same for an `observation` with `value={"status": "resolved"}`.
->
-> A check also needs a witness, and P1 en route within 500 m counts.
-
-### 3. Read "it's resolved" in more than one key, until the prompts fix the shape
-
-Kartik's list includes telling vehicles in `prompts/shared.md` to use `value: {"status": "open" | "resolved" | "clear"}` for observations. Live models will still sometimes use their own keys. Paste:
-
-> In `backend/agnt911/trust.py`, add `_says_handled(value) -> bool`:
-> - True if `value.get("status")` is `resolved` or `clear`, or if any key containing `"status"` has a string value equal to `resolved` or `clear` (case-insensitive).
->
-> Use it in `should_verify` (the observation line added in 1e8f8ec) and in `_check_observation` in place of `value.get("status") in ("resolved", "clear")`.
->
-> Test: an observation with `value={"I3_status_in_my_state": "resolved"}` from a vehicle at I3 is always verified, and it is contradicted once item 2 lands. That value is the exact one A2 sent live.
+1. **Observations about other vehicles.** An observation's numbers describe its subject, not its sender. `_subject` picks the subject: the vehicle named in `value` (`vehicle`, `subject`, `target_vehicle` or `other`); otherwise the single other vehicle id in the reasoning; otherwise the sender. `_numbers_lie` then measures `distance_m` and `eta_seconds` from that vehicle. When the subject is another vehicle, `_check_observation` confirms the report if that vehicle really is that far (within max(150 m, 25%)) from the named incident. Two or more candidate subjects with numbers attached: unverifiable, never contradicted. The protocol's bid-as-observation now carries `value.vehicle` = the bidder, so bids are still measured from the bidder. Tests: `test_observation_about_another_vehicle_is_checked_against_that_vehicle` (the exact live P1 claim from t120, now confirmed), `..._naming_another_vehicle_in_reasoning_only...`, `..._ambiguous_subject_is_unverifiable...`, and `test_bid_observation_naming_the_sender_is_still_checked_against_the_sender`.
+2. **"Resolved" needs every required role on scene.** `REQUIRED_ROLES` (the same as `protocol.ROLES`) plus `_roles_on_scene`; `_resolution` contradicts unless every role the call needs is physically there. `_capable_on_scene` was removed (`_resolution` was its only caller). Test: `test_resolved_at_severe_crash_with_only_the_ambulance_is_contradicted`. No existing test pinned the old rule: the two this list flagged both use a medical call, where one ambulance is every role, and they still pass unchanged.
+3. **Lenient status read.** `_says_handled(value)` is true for `resolved`/`clear` under any key containing "status" (case-insensitive). It is used in `should_verify` and `_check_observation`. Test: `test_resolved_read_from_any_status_key`, with the exact live value `{"I3_status_in_my_state": "resolved"}`.
 
 ### 4. Check bids, not just claims: done another way, nothing to build
 

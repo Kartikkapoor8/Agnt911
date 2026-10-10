@@ -604,3 +604,93 @@ def test_checks_never_mutate_the_world_or_the_claim():
     tick_record(world, times, "protocol", 0, False)
     assert world.model_dump() == world_before
     assert [c.model_dump() for c in claims] == claims_before
+
+
+# --- observations about other vehicles; resolved needs every role; lenient status (chris-next items 1-3) ---
+
+LIVE_P1_T120 = Location(lat=37.33385, lng=-121.89318)  # P1's real position at t120, run f2823f3c (scenario 5b12021)
+LIVE_I5 = Location(lat=37.33025, lng=-121.88245)         # I5 in that run
+
+
+def live_t120_world():
+    """P1 parked where it really was at t120, I5 where it really was, A2 driving to I5 and 240 m short of it."""
+    world = build_fake_world()
+    world.incidents = {"I5": world.incidents["I5"].model_copy(update={"location": LIVE_I5, "status": "assigned",
+                                                                      "assigned": ["A2"]})}
+    world.vehicles["P1"].location = LIVE_P1_T120
+    world.vehicles["A2"].location = north(LIVE_I5, 240)
+    world.vehicles["A2"].status, world.vehicles["A2"].target_incident = "en_route", "I5"
+    return world
+
+
+def test_observation_about_another_vehicle_is_checked_against_that_vehicle():
+    """The exact live claim: P1 reports A2 240 m out on I5. P1 is about 1 km from I5, A2 really is 240 m: confirmed."""
+    world = live_t120_world()
+    claim = make_claim(world, "P1", "observation", "I5", id="d7-P1-r2-c1", round=2,
+                       value={"vehicle": "A2", "status_seen": "en_route", "distance_m": 240, "target": "I5"},
+                       reasoning="A2 is within my 500 m sensor range at about 240 m, showing en_route with target I5.")
+    assert 900 < _metres(world.vehicles["P1"].location, LIVE_I5) < 1100
+    assert check_claim(claim, world) == CONFIRMED
+
+
+def test_observation_naming_another_vehicle_in_reasoning_only_is_about_that_vehicle():
+    """No vehicle key, but the reasoning names one other vehicle: its position is the one checked."""
+    world = live_t120_world()
+    claim = make_claim(world, "P1", "observation", "I5", value={"distance_m": 240},
+                       reasoning="A2 is about 240 m from I5.")
+    assert check_claim(claim, world) == CONFIRMED
+
+
+def test_observation_with_an_ambiguous_subject_is_unverifiable_not_contradicted():
+    """Two other vehicles named and an understated distance: nobody is blamed."""
+    world = live_t120_world()
+    claim = make_claim(world, "P1", "observation", "I5", value={"distance_m": 50},
+                       reasoning="A2 and A3 are both heading for I5.")
+    assert check_claim(claim, world) == UNVERIFIABLE
+
+
+def test_bid_observation_naming_the_sender_is_still_checked_against_the_sender():
+    """The protocol's bid-as-observation names the bidder itself: an understated distance or ETA is a lie."""
+    world = live_t120_world()
+    world.vehicles["A3"].location = north(LIVE_P1_T120, 300)  # about 1.2 km from I5, P1 300 m away as witness
+    assert _metres(world.vehicles["A3"].location, LIVE_I5) > 1100  # a 30 s ETA is impossible even at 30 m/s
+    for value in ({"vehicle": "A3", "distance_m": 200}, {"vehicle": "A3", "eta_seconds": 30}):
+        claim = make_claim(world, "A3", "observation", "I5", value=value, reasoning="A2 is closer, but I can go.")
+        assert check_claim(claim, world) == CONTRADICTED, value
+
+
+def severe_crash_with_ambulance_only():
+    """I3 as a severity 5 crash, A2 parked on it, P1 300 m away (a witness, but not on scene)."""
+    world = build_fake_world()
+    world.incidents = {"I3": world.incidents["I3"].model_copy(update={"severity": 5, "status": "assigned",
+                                                                      "assigned": ["A2", "P1"]})}
+    crash = world.incidents["I3"].location
+    world.vehicles["A2"].location = crash
+    world.vehicles["A2"].status, world.vehicles["A2"].target_incident = "on_scene", "I3"
+    world.vehicles["P1"].location = north(crash, 300)
+    world.vehicles["P1"].status, world.vehicles["P1"].target_incident = "en_route", "I3"
+    return world
+
+
+def test_resolved_at_severe_crash_with_only_the_ambulance_is_contradicted():
+    """A crash needs ambulance and police on scene to be handled; the ambulance alone cannot call it resolved."""
+    world = severe_crash_with_ambulance_only()
+    assert check_claim(make_claim(world, "A2", "resolved", "I3"), world) == CONTRADICTED
+    said = make_claim(world, "A2", "observation", "I3", value={"status": "resolved"})
+    assert check_claim(said, world) == CONTRADICTED
+    world.vehicles["P1"].location = world.incidents["I3"].location  # police arrives: now plausible
+    assert check_claim(make_claim(world, "A2", "resolved", "I3"), world) == UNVERIFIABLE
+
+
+def test_resolved_read_from_any_status_key():
+    """The exact live value A2 sent ({"I3_status_in_my_state": "resolved"}) is always verified and, here, contradicted."""
+    world = severe_crash_with_ambulance_only()
+    claim = make_claim(world, "A2", "observation", "I3", value={"I3_status_in_my_state": "Resolved"})
+    assert should_verify(claim, world.vehicles["A2"], 1)
+    assert check_claim(claim, world) == CONTRADICTED
+
+
+def _metres(a, b):
+    """Great-circle distance in metres, for test geometry checks."""
+    from agnt911.geo import haversine_m
+    return haversine_m(a, b)

@@ -255,7 +255,9 @@ def _bid_as_claim(world: World, bid: Bid) -> Claim:
     """Present a bid to the trust module as what it asserts: an observation of that incident, with its ETA."""
     return Claim(id=f"{bid.vehicle}-r{bid.round}-bid-{bid.incident}", tick=world.tick, vehicle=bid.vehicle,
                  type="observation", incident=bid.incident, location=world.vehicles[bid.vehicle].location,
-                 value={"eta_seconds": bid.eta_seconds}, confidence=bid.confidence, reasoning=bid.reasoning,
+                 # value.vehicle names the bidder, so trust checks the ETA against the bidder's own position
+                 value={"eta_seconds": bid.eta_seconds, "vehicle": bid.vehicle}, confidence=bid.confidence,
+                 reasoning=bid.reasoning,
                  round=bid.round, compromised=bid.compromised)
 
 
