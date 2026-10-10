@@ -139,6 +139,100 @@ Stuck-vote payload (`round_state`), sent per role, only for severity 4-5 when no
 ```
 `contradicting_claims` = observation claims about that incident plus any claim a check found `contradicted`.
 
+## Trust engine (Chris)
+
+Answers to Chris's questions, collected Oct 10. `backend/agnt911/trust.py` builds against these. Where an answer and the running code disagree, the code in `protocol.py` and `tests/` wins, and the difference is noted.
+
+### From Kartik (claims, voting)
+
+1. Claim fields:
+```json
+{
+  "id": "c_0042",
+  "tick": 118,
+  "vehicle": "A2",
+  "type": "on_scene",
+  "incident": "i_3",
+  "location": {"lat": 37.33, "lng": -121.89},
+  "value": null,
+  "confidence": 0.9,
+  "reasoning": "one sentence from the LLM",
+  "sig": "hmac hex"
+}
+```
+`incident` is null for `available`. `value` is a type-specific payload, for example `eta_seconds` for `en_route`. The protocol also stamps `kind: "claim"` and `round`.
+
+2. Claim types:
+   - `on_scene`: I'm at incident X.
+   - `en_route`: heading to X, with `value: {"eta_seconds": ...}`.
+   - `resolved`: X is handled, close it.
+   - `sector_clear`: nothing open within my 500 m.
+   - `available`: I'm free, at my location.
+   - `capability`: I can or can't handle X, for example a fire engine claiming medical.
+   - `observation`: I see Y at location Z. Used to report a new or changed incident.
+3. High stakes: `resolved`, `sector_clear`, and any `on_scene` for severity 4 or higher. These are always verified.
+4. Every claim carries `tick`. World tick is the clock; one tick is one second of sim time.
+5. Stuck-vote payload, as Kartik described it:
+```json
+{
+  "incident": "i_3",
+  "severity": 5,
+  "round": 4,
+  "max_rounds": 4,
+  "options": [{"assign": "A1"}, {"assign": "A3"}],
+  "votes": [{"vehicle": "A1", "option": 0, "weight": 1.0}],
+  "honest_weight_total": 4.2,
+  "claims_this_round": ["...claim objects..."]
+}
+```
+   `protocol.py` currently sends the shape in "Kartik -> Chris" above (`options` as Bids, `tally`, `honest_total`, `threshold`, `votes`, `contradicting_claims`). `should_escalate` accepts both.
+6. Max rounds: 4 per decision.
+7. Vote weight: one float per vehicle, 0.0 to 1.0. The protocol multiplies each vote by it.
+8. Consensus: an option wins with more than 60% of total honest weight. Honest weight is the sum of the weights of vehicles not marked untrusted. This is not a simple majority, so two liars cannot tip a close vote.
+9. Untrusted vehicles still speak, are still logged, and have weight 0. Muting them would hide the evidence; a red vehicle still arguing while nobody listens is the demo moment. Their claims are always verified and never acted on.
+
+Baseline: `vote_weight` returns 1.0 for everyone and `should_verify` returns false for everything. That is the whole central-dispatcher mode. Today `protocol.run_round` returns before verification and voting when `world.baseline` is true, so neither function is called in baseline.
+
+### From Matthew (frontend)
+
+- **Ask-a-human popup.** Send an escalation id, a one-line reason consensus failed, a list of options (each with a label, the vehicles backing it, and its weighted vote total), and evidence lines as objects (source vehicle, claim, check result) rather than plain strings. Matthew POSTs the chosen option back with the id. He needs to know whether the simulation pauses while it is open (Greg's contract: yes, movement and negotiation pause).
+- **Red vehicle.** Send both: `trust` drives the trust bar and `untrusted` drives the red, so the threshold lives in the trust engine. Also send a separate `compromised` flag for which vehicle is actually hacked, to show the gap between the attack and the fleet catching it.
+- **Checks.** Send each check as an event with `id`, `tick`, `checker`, `target`, `claim`, `result` (`pass` or `fail`), `trust_before`, and `trust_after`. Keep them in an append-only list in `/state` so the frontend can dedupe by id across polls.
+- **Comparison screen.** One record per tick for each run (orchestrator baseline and our protocol), same scenario seed and same attack. Matthew sums them into headline numbers. Each tick record has:
+  - incidents open, served, and falsely marked "handled"
+  - verification checks run that tick
+  - trust per vehicle
+  - whether an escalation fired
+
+  Plus the created and served tick for each incident, for response time.
+
+  Shown: incidents correctly served, incidents falsely marked "handled", mean response time, rounds until the hacked vehicle is flagged (protocol only), and human escalations as single numbers; checks per round and trust per vehicle as charts. If there is time for only one chart, it is checks per round.
+
+### From Greg (engine, from his v0.1 contract)
+
+- Trust is stored on the vehicle (`snapshot["vehicles"][id]["trust"]`). The trust engine returns changed scores and keeps no second authoritative trust map.
+- The adapter calls `check_claim` once per selected claim in each round's signed batch, then `update_trust`, `vote_weight`, and `should_escalate`. They are not called on every 100 ms movement tick. Trust functions stay synchronous.
+- `context.rng` is a `random.Random` seeded 911 every run. Spot-check selection must replay the same way.
+- Baseline reaches the trust engine as `snapshot["mode"] == "baseline"` and `context.mode`; in Kartik's models it is `world.baseline`.
+- The judge-only `hacked` flag must never be used as evidence that a claim is false.
+- Engine check records are `{sender, claim_sequence, verifier, result: "pass" | "fail" | "inconclusive", reason}`, and extra fields are allowed.
+- Log events include `vehicle_hacked`, `claim`, `verification`, `trust_changed`, `dispatch`, `incident_created`, and `incident_resolved`, each with `tick` and `round`.
+- Greg's contract uses vehicle ids like `ambulance-1`, flat `lat`/`lng`, status `idle`, and incident `priority` 1-3 instead of `severity` 1-5. `models.py` uses `A1`, `Location`, `free`, and `severity`. The trust engine builds against `models.py`; the engine adapter converts.
+
+### Decide as a group (proposed defaults, not yet agreed)
+
+| Question | Proposed |
+|---|---|
+| Sight range for checking a claim | 500 m |
+| How close counts as on scene | 100 m |
+| Starting trust | 1.0 |
+| Drop per failed check | 0.3 |
+| Gain per passed check | 0 |
+| Untrusted cutoff | below 0.4 |
+| Can an untrusted vehicle earn trust back | No, out for the run |
+| Quorum | more than 60% of honest weight |
+| Does a hack change what a vehicle says, sees, or both | Only what it says |
+
 ## GET /state response
 (to fill)
 
