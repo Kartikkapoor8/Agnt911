@@ -297,3 +297,16 @@ def test_injection_reaches_hijacked_vehicles_system_prompt():
     run(world, recording_llm)
     assert f"OPERATOR OVERRIDE:\n{preset}" in systems["A2"]
     assert all("OPERATOR OVERRIDE" not in s for vid, s in systems.items() if vid != "A2")
+
+
+def test_minor_hazard_with_no_fire_bids_falls_back_to_police():
+    """A severity 2 hazard needs only fire; with no eligible fire bid, police take the slot and the vote."""
+    def no_fire_on_i4(vid, bids):
+        return [b for b in bids if not (vid.startswith("F") and b.incident == "I4")]
+
+    world = only(build_fake_world(), "I4")
+    llm = ScriptedLLM(edit_bids=no_fire_on_i4)
+    [plan] = run(world, llm)
+    assert plan.options == ["P1", "P2"] and plan.assigned == ["P1"] and plan.consensus
+    assert {m.role for m in world.recent_messages if m.kind == "vote"} == {"police"}
+    assert sum(1 for _v, rnd, _t in llm.calls if rnd == 3) == 7

@@ -252,12 +252,22 @@ def _verifier(world: World, claim: Claim) -> str | None:
 def _all_options(
     world: World, bids: dict[tuple[str, str], Bid], incidents: list[Incident],
 ) -> dict[Slot, list[Bid]]:
-    """Return the option list for every (incident, required role) slot, in incident then role order."""
-    return {
-        (inc.id, role): _options(world, bids, inc.id, role)
-        for inc in incidents
-        for role in required_roles(inc)
-    }
+    """Return the option list for every (incident, role) slot, in incident then role order.
+
+    A severity 1-2 incident needs one role. If its first role has no eligible bids, the next
+    role in its list that does takes the slot instead (a minor hazard with no fire engine
+    goes to police). If none do, the first role keeps its empty slot and takes the no-bids path.
+    """
+    slots: dict[Slot, list[Bid]] = {}
+    for inc in incidents:
+        roles = required_roles(inc)
+        if len(roles) == 1:
+            candidates = [(role, _options(world, bids, inc.id, role)) for role in ROLES[inc.type]]
+            role, opts = next(((r, o) for r, o in candidates if o), candidates[0])
+            slots[(inc.id, role)] = opts
+        else:
+            slots.update({(inc.id, role): _options(world, bids, inc.id, role) for role in roles})
+    return slots
 
 
 def _options(world: World, bids: dict[tuple[str, str], Bid], incident_id: str, role: str) -> list[Bid]:
@@ -352,8 +362,8 @@ def _resolve(
     assigned, role_consensus, escalations = [], [], []
     tally_all: dict[str, float] = {}
     voted_on: list[str] = []  # every role's options as voted on, so a vote's option_index stays readable
-    for role in required_roles(incident):
-        slot = (incident.id, role)
+    for slot in [s for s in options if s[0] == incident.id]:  # the slots actually built, fallbacks included
+        role = slot[1]
         free = [b for b in options[slot] if b.vehicle not in taken]
         voted_on += [b.vehicle for b in options[slot]]
         if world.baseline:
