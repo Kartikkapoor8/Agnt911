@@ -29,7 +29,7 @@ I ran the scripted demo against the real API through tick 80, twice. Both runs u
 | unverifiable | 32 | 36 |
 | contradicted | 0 | 0 |
 
-**The good news:** 126 live checks on real Claude output, with real position rounding and jitter, and not one honest vehicle was wrongly contradicted. Most unverifiable results had no witness: the fleet is spread 1-3 km apart, and nobody else was within 500 m.
+**The good news:** 126 live checks on real Claude output, with real position rounding and jitter, and not one honest vehicle was wrongly contradicted. A later batch run found one; see item 1. Most unverifiable results had no witness: the fleet is spread 1-3 km apart, and nobody else was within 500 m.
 
 **The bad news:** the hijacked A2 wasn't caught, because it never made a claim your rules can contradict.
 
@@ -37,7 +37,7 @@ I ran the scripted demo against the real API through tick 80, twice. Both runs u
 - Under the sensor feed, A2 believed I3 was resolved. But it wrote that only in free-form observation fields, such as `{"I3_status_in_my_state": "resolved"}` and a `note` string, never as `value.status`.
 - Even with `value.status: "resolved"`, `_resolution` would return unverifiable, because a suitable vehicle (A2 itself) is at the scene.
 
-Items 1 and 2 below fix this from your side. The scenario target and the observation `value` shape are on Kartik's list from this audit.
+Items 2 and 3 below fix this from your side. The scenario target and the observation `value` shape are on Kartik's list from this audit.
 
 ## What I changed in your file (1e8f8ec, "audit fixes: trust (Chris)")
 
@@ -53,7 +53,27 @@ Kartik's 59f0b40 also changed two things you'll see:
 
 ## What's left, in priority order
 
-### 1. "Resolved" should need every required role on scene
+### 1. An honest vehicle lost trust: a distance to another vehicle was read as a distance to the incident
+
+This is the one false positive so far, and it costs an honest vehicle trust. It came from kartik-7e's real-API batch run on 5b12021 (`backend/logs/f2823f3cb400472cb9ae6a560c2efb74.jsonl`, not committed).
+
+- At tick 120, honest P1 sent observation `d7-P1-r2-c1` with `incident="I5"` and `value={"vehicle": "A2", "status_seen": "en_route", "distance_m": 240, "target": "I5"}`. The 240 m is P1's distance to A2.
+- `_numbers_lie` reads `distance_m` on an observation as the distance to the named incident, which is about 1 km. It returned a lie, `check_claim` returned contradicted (with A2 as witness), and P1 dropped from 1.0 to 0.7.
+- Two more like it and an honest police car goes red on stage.
+
+The rest of that batch behaved as intended:
+- A1 was caught at tick 60 and A3 at tick 120; both went untrusted on the same tick.
+- The bid ETA checks fired on A3 (30 s from 1,520 m) and A1 (0 s on I3 from 742 m).
+
+Paste this into your agent:
+
+> In `backend/agnt911/trust.py`, `_numbers_lie`: an observation's `distance_m` is only about the named incident when the observation isn't about something else.
+>
+> At the top of the `distance` branch, skip the check when `claim.type == "observation"` and the value names another subject: any of the keys `"vehicle"`, `"subject"`, `"target_vehicle"` or `"other"`. Leave the `eta_seconds` check alone, because the protocol now sends bids as observations carrying `eta_seconds`, and those must still be checked.
+>
+> Add `test_observation_distance_to_another_vehicle_is_not_a_lie`: P1 sends `observation` with `incident="I5"` and `value={"vehicle": "A2", "status_seen": "en_route", "distance_m": 240, "target": "I5"}` from about 1 km from I5, and `check_claim` is not `CONTRADICTED`. This is the exact live claim. Keep `test_understated_distance_is_contradicted` passing for observations whose value has no other-subject key.
+
+### 2. "Resolved" should need every required role on scene
 
 Paste this into your agent:
 
@@ -75,7 +95,7 @@ Paste this into your agent:
 >
 > A check also needs a witness, and P1 en route within 500 m counts.
 
-### 2. Read "it's resolved" in more than one key, until the prompts fix the shape
+### 3. Read "it's resolved" in more than one key, until the prompts fix the shape
 
 Kartik's list includes telling vehicles in `prompts/shared.md` to use `value: {"status": "open" | "resolved" | "clear"}` for observations. Live models will still sometimes use their own keys. Paste:
 
@@ -84,13 +104,13 @@ Kartik's list includes telling vehicles in `prompts/shared.md` to use `value: {"
 >
 > Use it in `should_verify` (the observation line added in 1e8f8ec) and in `_check_observation` in place of `value.get("status") in ("resolved", "clear")`.
 >
-> Test: an observation with `value={"I3_status_in_my_state": "resolved"}` from a vehicle at I3 is always verified, and it is contradicted once item 1 lands. That value is the exact one A2 sent live.
+> Test: an observation with `value={"I3_status_in_my_state": "resolved"}` from a vehicle at I3 is always verified, and it is contradicted once item 2 lands. That value is the exact one A2 sent live.
 
-### 3. Check bids, not just claims: done another way, nothing to build
+### 4. Check bids, not just claims: done another way, nothing to build
 
 Superseded (commit "scenario: tight map, catchable hijacks, fake-call preset, callers"). The protocol now hands every bid to your existing `check_claim` as an `observation` of that incident with `value: {"eta_seconds": ...}`, sent from the bidder's real position. Your `_numbers_lie` ETA rule and `witness` judge it, `update_trust` applies the result, and a contradicted bid is left out of the vote. Don't add `check_bid`. If you change the ETA rule, the closer_than_you_are hijack in the demo depends on it: A3 bids 30 s on I5 from 1,520 m with P2 112 m away.
 
-### 4. Spot checks should vary by tick
+### 5. Spot checks should vary by tick
 
 `_sampled` hashes (vehicle, round, type, incident) and ignores the tick, so the same claims are picked every decision. For example, A2, A3 and P1 are never spot-checked on `available`, and P2 always is. The spec says one random spot check per round. Paste:
 
@@ -98,7 +118,7 @@ Superseded (commit "scenario: tight map, catchable hijacks, fake-call preset, ca
 >
 > Update the three sampling tests: `test_ordinary_claims_are_sampled_about_one_in_three_by_a_fixed_hash` in `test_trust.py`, and `test_sampling_matches_the_spec_hash` and `test_sampling_ignores_claim_id_tick_confidence_and_location` in `test_trust_acceptance.py`.
 
-### 5. Decide whether an assigned call disproves `sector_clear`
+### 6. Decide whether an assigned call disproves `sector_clear`
 
 `_open_call_nearby` only counts `status == "open"`, and by tick 120 (F2's scripted hijack) every live call is `assigned`. A false `sector_clear` there can't be contradicted. Under the sensor feed, F2 mostly just stops bidding instead of claiming anything, so this is lower priority. Your call; `test_sector_clear_with_only_assigned_incident_nearby_is_not_contradicted` pins the current rule.
 
