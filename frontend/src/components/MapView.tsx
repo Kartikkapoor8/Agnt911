@@ -304,8 +304,8 @@ export function MapView({
         el.className = `vehicle-marker vehicle-${v.type}`;
         el.dataset.id = v.id;
         el.innerHTML =
-          `<span class="vm-ring"></span><span class="vm-dot">${glyphSvg(v.type, 12)}</span>` +
-          `<span class="vm-id">${v.id}</span><span class="vm-skull" title="Hacked (judge view only)">${glyphSvg("skull", 10)}</span>`;
+          `<span class="vm-ring"></span><span class="vm-dot">${glyphSvg(v.type, 20)}</span>` +
+          `<span class="vm-id">${v.id}</span><span class="vm-skull" title="Hacked (judge view only)">${glyphSvg("skull", 20)}</span>`;
         wrap.addEventListener("click", (e) => {
           e.stopPropagation();
           onSelect.current?.(v.id);

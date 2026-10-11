@@ -1,4 +1,5 @@
 import { useState, type CSSProperties } from "react";
+import { Ban, Check, CircleCheck, CircleHelp, Siren, Skull, TriangleAlert, TrendingDown, TrendingUp, UserCheck, X, type LucideIcon } from "lucide-react";
 import { checkSentence, decisionSentence, type CheckCard, type DecisionCard, type NoteCard, type RawItem, type StoryItem, useStory } from "../story";
 import type { Message, Preset, Vehicle } from "../types";
 import type { MapTarget } from "./MapView";
@@ -14,7 +15,10 @@ interface Props {
   onPick: (target: MapTarget) => void; // highlight the card's vehicle (or its call) on the map
 }
 
-const MARK: Record<string, string> = { confirmed: "✓", contradicted: "✗", unverifiable: "?" };
+const MARK: Record<string, LucideIcon> = { confirmed: Check, contradicted: X, unverifiable: CircleHelp };
+const NOTE_ICON: Record<string, LucideIcon> = {
+  untrusted: Ban, trusted: UserCheck, trust: TrendingDown, hack: Skull, human: UserCheck, resolved: CircleCheck, false_report: X, call_escalated: TriangleAlert,
+};
 const vehicleColor = (id: string) => ({ "--who": `var(--veh-${id}, var(--veh-default))` }) as CSSProperties;
 
 /** Where a click on this item takes the map. */
@@ -89,7 +93,7 @@ function DecisionView({ card, vehicles, labels, expandedByDefault, onPick }: { c
   return (
     <li className={`story-card card-decision status-${card.status}`} onClick={onPick}>
       <div className="sc-head">
-        <span className="sc-emoji" aria-hidden>🚨</span>
+        <span className="sc-mark" aria-hidden><Siren size={16} /></span>
         <span className="sc-title">
           <b>{card.incident}</b>
           {label ? ` · ${label}` : ""}
@@ -126,7 +130,7 @@ function DecisionView({ card, vehicles, labels, expandedByDefault, onPick }: { c
                       <td style={vehicleColor(id)} className="sc-unit">{id}</td>
                       <td>{bid ? (bid.withdrawn ? "withdrew" : bid.eta !== null ? `${bid.eta} s` : "–") : "–"}</td>
                       <td className={bid?.check ? `result-${bid.check.result}` : ""}>
-                        {bid?.check ? `${MARK[bid.check.result] ?? "?"} ${bid.check.verifier ?? "nobody"}` : "–"}
+                        {bid?.check ? <ResultMark result={bid.check.result} verifier={bid.check.verifier} /> : "–"}
                       </td>
                       <td className={votes.some((x) => !x.counted) ? "not-counted" : ""}>
                         {votes.length ? votes.map((x) => x.choice ?? "?").join(" · ") : "–"}
@@ -149,7 +153,7 @@ function CheckView({ card, onPick }: { card: CheckCard; onPick: () => void }) {
   return (
     <li className="story-card card-check" style={vehicleColor(card.vehicle)} onClick={onPick}>
       <div className="sc-head">
-        <span className="sc-mark" aria-hidden>✗</span>
+        <span className="sc-mark" aria-hidden><X size={16} /></span>
         <span className="sc-text">{checkSentence(card)}</span>
         <span className="sc-tick">t{card.tick}</span>
       </div>
@@ -167,11 +171,10 @@ function NoteView({ card, presets, labels, onPick }: { card: NoteCard; presets: 
     text = `Judge hacked ${card.vehicle}: ${preset ? preset.label.toLowerCase() : HACK_WORDS[card.text] ?? card.text.replace(/_/g, " ")}.`;
   }
   if (card.kind === "resolved" && card.incident && labels[card.incident]) text = `${card.incident} · ${labels[card.incident]} · resolved`;
-  const icon: Record<string, string> = { untrusted: "⛔", trusted: "✓", trust: "▲", hack: "☠", human: "👤", resolved: "✓", false_report: "✗", call_escalated: "⚠" };
   return (
     <li className={`story-card note note-${card.kind}`} style={card.vehicle ? vehicleColor(card.vehicle) : undefined} onClick={onPick}>
       <div className="sc-head">
-        <span className="sc-mark" aria-hidden>{icon[card.kind] ?? "•"}</span>
+        <span className="sc-mark" aria-hidden><NoteIcon kind={card.kind} /></span>
         <span className="sc-text">{text}</span>
         <span className="sc-tick">t{card.tick}</span>
       </div>
@@ -189,5 +192,20 @@ function RawView({ item, onPick }: { item: RawItem; onPick: () => void }) {
       <b className={`fl-who ${isVehicle ? "is-vehicle" : "is-incident"}`}>{l.who}</b>
       <span className="fl-text">{l.text}</span>
     </li>
+  );
+}
+
+function NoteIcon({ kind }: { kind: string }) {
+  const Icon = kind === "trust" ? TrendingDown : NOTE_ICON[kind] ?? TrendingUp;
+  return <Icon size={16} />;
+}
+
+/** A bid check in the table: Lucide mark plus who checked. */
+function ResultMark({ result, verifier }: { result: string; verifier: string | null }) {
+  const Icon = MARK[result] ?? CircleHelp;
+  return (
+    <span className="result-mark">
+      <Icon size={12} /> {verifier ?? "nobody"}
+    </span>
   );
 }

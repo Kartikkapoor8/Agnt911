@@ -1,0 +1,84 @@
+/* Agnt911 visual system. Every colour, size, radius and timing in styles.css comes from here.
+ *
+ * Colour has meaning, and only these meanings:
+ *   accent (electric blue)  the fleet: vehicles, routes, the vote
+ *   red                     untrusted, contradicted, false
+ *   amber                   a human decision, an escalation
+ *   green                   confirmed, resolved
+ *   grey                    everything else
+ */
+:root {
+  /* surfaces */
+  --bg: #07090f; /* near-black with a slight blue */
+  --bg-raised: #0d1018;
+  --panel: rgba(12, 14, 20, 0.72);
+  --panel-solid: #0c0e14;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --hover: rgba(255, 255, 255, 0.05);
+
+  /* text */
+  --text: #e8ebf2;
+  --text-2: #9aa1b2;
+  --text-3: #5f6677;
+
+  /* meaning */
+  --accent: #3b82ff;
+  --accent-bright: #6ea4ff;
+  --accent-soft: rgba(59, 130, 255, 0.16);
+  --red: #ff4d5e;
+  --red-soft: rgba(255, 77, 94, 0.16);
+  --amber: #ffb020;
+  --amber-soft: rgba(255, 176, 32, 0.14);
+  --green: #2fd480;
+  --green-soft: rgba(47, 212, 128, 0.14);
+  --grey: #8a90a0;
+  --grey-soft: rgba(138, 144, 160, 0.14);
+
+  /* incident severity: grey for minor, warming to hot for critical */
+  --sev-1: #5f6677;
+  --sev-2: #8a90a0;
+  --sev-3: #c9ccd6;
+  --sev-4: #ff9a3d;
+  --sev-5: #ff5a4e;
+
+  /* type */
+  --font-ui: Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 20px;
+  --fs-num: 28px;
+
+  /* space: an 8 px grid (4 px only for hairline gaps inside a control) */
+  --s-half: 4px;
+  --s1: 8px;
+  --s2: 16px;
+  --s3: 24px;
+  --s4: 32px;
+  --s5: 40px;
+
+  /* shape */
+  --radius: 14px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --blur: 14px;
+
+  /* icons (Lucide) */
+  --icon-panel: 16px;
+  --icon-map: 20px;
+
+  /* motion: ease-out, nothing bounces */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-ui: 180ms;
+  --t-map: 400ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-ui: 0ms;
+    --t-map: 0ms;
+  }
+}
