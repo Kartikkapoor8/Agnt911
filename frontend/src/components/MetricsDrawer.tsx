@@ -1,54 +1,48 @@
 import { useState } from "react";
+import { ChevronUp } from "lucide-react";
 import type { Mode } from "../api";
 import { compromisedIn } from "../runs";
 import type { Metrics, WorldState } from "../types";
-import { Panel } from "./Panel";
 
 interface Props {
   state: WorldState;
   onSetMode: (mode: Mode) => Promise<void>;
 }
 
-interface Column {
-  key: string;
+interface Run {
   title: string;
-  sub: string;
   metrics: Partial<Metrics>;
-  compromised: string[] | null; // null: this browser didn't see the run, so lies can't be told from mistakes
-  baseline: boolean;
+  calls: number; // calls in the run so far
+  hacked: string[] | null; // null: this browser didn't watch the run, so lies can't be told from mistakes
 }
 
-type Row = [label: string, value: (m: Partial<Metrics>, c: Column) => string, hint?: string];
-
-const dash = (x: number | null | undefined) => (typeof x === "number" ? String(x) : "–");
 const flagged = (m: Partial<Metrics>) => Object.keys(m.first_untrusted_tick ?? {});
+const caught = (r: Run) => (r.hacked ? flagged(r.metrics).filter((v) => r.hacked!.includes(v)).length : null);
+const wrongly = (r: Run) => (r.hacked ? flagged(r.metrics).filter((v) => !r.hacked!.includes(v)).length : null);
+const n = (x: number | null | undefined) => (typeof x === "number" ? String(x) : "–");
 
-/** The table rows, worded for someone who doesn't read code. secondsPerTick converts the response time. */
-function rows(secondsPerTick: number): Row[] {
+/** The three numbers that tell the story: calls answered, lies caught, honest units wrongly flagged. */
+function headline(r: Run): [string, string, string] {
+  const lies = caught(r);
   return [
-    ["Calls answered", (m) => dash(m.incidents_served)],
-    ["Calls left unanswered", (m) => dash(m.unserved)],
-    ["Calls closed with nobody sent", (m) => dash(m.incidents_false_handled)],
-    ["Avg response (s)", (m) => (typeof m.mean_response_ticks === "number" ? (m.mean_response_ticks * secondsPerTick).toFixed(1) : "–")],
-    ["Lies caught", (m, c) => (c.compromised ? String(flagged(m).filter((v) => c.compromised!.includes(v)).length) : "?"), "Hacked vehicles the fleet stopped trusting"],
-    ["Honest units wrongly flagged", (m, c) => (c.compromised ? String(flagged(m).filter((v) => !c.compromised!.includes(v)).length) : "?"), "Vehicles that were not hacked but lost the fleet's trust"],
-    ["Times it asked a human", (m) => dash(m.escalations)],
+    `${n(r.metrics.incidents_served)}/${r.calls}`,
+    r.hacked ? `${n(lies)}/${r.hacked.length}` : "?",
+    n(wrongly(r)),
   ];
 }
 
-const MODE_LABEL: Record<Mode, string> = { protected: "Protected", baseline: "Dumb dispatcher" };
-
-/** Bottom drawer, collapsed by default: this run next to the latest run of the other mode, the baseline switch, and history. */
+/** Scoreboard, bottom centre: a thin bar with this run's three numbers; open it for Protected vs Dumb dispatcher. */
 export function MetricsDrawer({ state, onSetMode }: Props) {
+  const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState(false);
+  const baseline = state.mode === "baseline";
 
   async function setBaseline(on: boolean) {
     setPending(true);
     setError(null);
     try {
-      await onSetMode(on ? "baseline" : "protected");
+      await onSetMode(on ? "baseline" : "protected"); // starts a fresh run in that mode
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -56,65 +50,65 @@ export function MetricsDrawer({ state, onSetMode }: Props) {
     }
   }
 
-  const live: Column = { key: "live", title: `This run · ${MODE_LABEL[state.mode]}`, sub: `t${state.tick}`, metrics: state.metrics, compromised: state.compromised, baseline: state.mode === "baseline" };
-  // comparison only fills on a mode switch, oldest first; the newest run of the other mode is the one to beat.
-  const finished: Column[] = [...state.comparison].reverse().map((c) => ({
-    key: c.run_id,
-    title: c.baseline ? MODE_LABEL.baseline : MODE_LABEL.protected,
-    sub: c.run_id.slice(0, 6),
-    metrics: c.metrics,
-    compromised: compromisedIn(c.run_id),
-    baseline: c.baseline,
-  }));
-  const other = finished.find((c) => c.baseline !== live.baseline);
-  const rest = finished.filter((c) => c !== other);
-  const columns = [live, ...(other ? [other] : []), ...(history ? rest : [])];
   const secondsPerTick = state.tick > 0 && state.time_s > 0 ? state.time_s / state.tick : 1;
+  const live: Run = { title: baseline ? "Dumb dispatcher" : "Protected", metrics: state.metrics, calls: Object.keys(state.incident_timing).length, hacked: state.compromised };
+  const last = [...state.comparison].reverse().find((c) => c.baseline !== baseline);
+  const other: Run | null = last
+    ? { title: last.baseline ? "Dumb dispatcher" : "Protected", metrics: last.metrics, calls: Object.keys(last.incident_timing).length, hacked: compromisedIn(last.run_id) }
+    : null;
+  const protectedRun = baseline ? other : live;
+  const dumbRun = baseline ? live : other;
+  const [answered, lies, wrong] = headline(live);
 
-  const toggle = (
-    <label className={`baseline-switch${pending ? " busy" : ""}`} title="Restarts the scenario with one central dispatcher: no votes, no checks">
-      <input type="checkbox" role="switch" checked={state.mode === "baseline"} disabled={pending} onChange={(e) => setBaseline(e.target.checked)} />
-      <span className="switch-track" aria-hidden><span className="switch-thumb" /></span>
-      Compare: dumb dispatcher
-    </label>
-  );
+  const rows: [string, (r: Run) => string, string?][] = [
+    ["Calls answered", (r) => headline(r)[0]],
+    ["Lies caught", (r) => headline(r)[1], "Hacked vehicles the fleet stopped trusting, of those hacked"],
+    ["Honest units wrongly flagged", (r) => headline(r)[2]],
+    ["Avg response (s)", (r) => (typeof r.metrics.mean_response_ticks === "number" ? (r.metrics.mean_response_ticks * secondsPerTick).toFixed(1) : "–")],
+    ["Times a human was asked", (r) => n(r.metrics.escalations)],
+  ];
 
   return (
-    <Panel className="metrics-drawer" title="Metrics" actions={toggle} collapsible defaultCollapsed>
-      <div className="metrics-body">
-        {error && <p className="error-text">{error}</p>}
-        <table className="metrics-table">
-          <thead>
-            <tr>
-              <th />
-              {columns.map((c) => (
-                <th key={c.key} className={c.key === "live" ? "live-col" : ""}>
-                  {c.title} <span className="mono sub">{c.sub}</span>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows(secondsPerTick).map(([label, value, hint]) => (
-              <tr key={label}>
-                <th scope="row" title={hint}>{label}</th>
-                {columns.map((c) => (
-                  <td key={c.key} className="mono">{value(c.metrics, c)}</td>
-                ))}
+    <section className={`float-panel scoreboard${open ? " open" : ""}`}>
+      <button className="score-bar" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="score"><b className={baseline ? "" : "good"}>{answered}</b> calls answered</span>
+        <span className="score-sep" aria-hidden />
+        <span className="score"><b className="good">{lies}</b> lies caught</span>
+        <span className="score-sep" aria-hidden />
+        <span className="score"><b className={wrong !== "0" && wrong !== "–" ? "bad" : ""}>{wrong}</b> honest units wrongly flagged</span>
+        <ChevronUp className="score-chevron" size={16} aria-hidden />
+      </button>
+      {open && (
+        <div className="score-body">
+          <table className="score-table">
+            <thead>
+              <tr>
+                <th />
+                <th className={!baseline ? "live-col" : ""}>Protected{!baseline && <span className="sub"> this run</span>}</th>
+                <th className={baseline ? "live-col" : ""}>Dumb dispatcher{baseline && <span className="sub"> this run</span>}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="metrics-foot">
-          {!other && <p className="hint">Flip “Compare: dumb dispatcher” to run the same calls with one central dispatcher, then compare.</p>}
-          {rest.length > 0 && (
-            <button className="history-toggle" aria-expanded={history} onClick={() => setHistory(!history)}>
-              {history ? "Hide history" : `History (${rest.length} more run${rest.length === 1 ? "" : "s"})`}
-            </button>
-          )}
-          {columns.some((c) => !c.compromised) && <p className="hint">? = this browser didn't watch that run, so it can't tell lies from mistakes.</p>}
+            </thead>
+            <tbody>
+              {rows.map(([label, value, hint]) => (
+                <tr key={label}>
+                  <th scope="row" title={hint}>{label}</th>
+                  <td className="mono">{protectedRun ? value(protectedRun) : "–"}</td>
+                  <td className="mono">{dumbRun ? value(dumbRun) : "–"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="score-foot">
+            <label className={`baseline-switch${pending ? " busy" : ""}`} title="Resets the scenario and runs it with one central dispatcher: no votes, no checks">
+              <input type="checkbox" role="switch" checked={baseline} disabled={pending} onChange={(e) => setBaseline(e.target.checked)} />
+              <span className="switch-track" aria-hidden><span className="switch-thumb" /></span>
+              Run as dumb dispatcher
+            </label>
+            {!other && <span className="hint">Run both modes to fill both columns.</span>}
+            {error && <span className="error-text">{error}</span>}
+          </div>
         </div>
-      </div>
-    </Panel>
+      )}
+    </section>
   );
 }

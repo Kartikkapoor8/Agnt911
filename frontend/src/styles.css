@@ -325,17 +325,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .hc-result.result-fail { color: var(--red); }
 .hc-result.result-inconclusive { color: var(--text-3); }
 
-/* Metrics drawer (step 8 turns it into the scoreboard) */
-.metrics-drawer { left: 50%; bottom: var(--s2); transform: translateX(-50%); width: clamp(384px, calc(100vw - 736px), 784px); max-height: 46vh; }
-.metrics-body { overflow: auto; padding: var(--s1) var(--s2) var(--s2); }
-.metrics-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
-.metrics-table th, .metrics-table td { padding: var(--s-half) var(--s1); text-align: left; border-top: 1px solid var(--line); }
-.metrics-table thead th { border-top: 0; font: 600 var(--fs-xs)/16px var(--font-ui); color: var(--text); }
-.metrics-table thead th .sub { color: var(--text-3); font-weight: 400; margin-left: var(--s-half); }
-.metrics-table tbody th { font-weight: 400; color: var(--text-2); white-space: nowrap; }
-.metrics-table .live-col { color: var(--accent-bright); }
-.metrics-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-half) var(--s2); margin-top: var(--s1); }
-.history-toggle { background: none; border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 2px var(--s1); color: var(--text-2); font: 500 var(--fs-xs)/16px var(--font-ui); cursor: pointer; }
+/* Scoreboard, bottom centre */
+.scoreboard { left: 50%; bottom: var(--s2); transform: translateX(-50%); width: min(760px, calc(100vw - 768px)); min-width: 520px; }
+.score-bar { display: flex; align-items: center; justify-content: center; gap: var(--s2); width: 100%; height: 56px; padding: 0 var(--s2); border: 0; background: none; cursor: pointer; color: var(--text-2); }
+.score { display: inline-flex; align-items: baseline; gap: var(--s1); font: 500 var(--fs-sm)/1 var(--font-ui); white-space: nowrap; }
+.score b { font: 600 var(--fs-num)/1 var(--font-mono); color: var(--text); letter-spacing: -0.02em; }
+.score b.good { color: var(--accent-bright); }
+.score b.bad { color: var(--red); }
+.score-sep { width: 1px; height: 24px; background: var(--line); }
+.score-chevron { margin-left: auto; color: var(--text-3); transition: transform var(--t-ui) var(--ease); }
+.scoreboard.open .score-chevron { transform: rotate(180deg); }
+.score-body { padding: 0 var(--s2) var(--s2); border-top: 1px solid var(--line); }
+.score-table { width: 100%; border-collapse: collapse; margin-top: var(--s1); }
+.score-table th, .score-table td { padding: var(--s1); text-align: left; border-top: 1px solid var(--line); }
+.score-table thead th { border-top: 0; font: 600 var(--fs-sm)/16px var(--font-ui); color: var(--text-2); }
+.score-table thead th.live-col { color: var(--accent-bright); }
+.score-table .sub { color: var(--text-3); font-weight: 400; }
+.score-table tbody th { font: 400 var(--fs-md)/20px var(--font-ui); color: var(--text-2); }
+.score-table td { font: 600 var(--fs-xl)/24px var(--font-mono); color: var(--text); }
+.score-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin-top: var(--s2); }
 .baseline-switch { display: inline-flex; align-items: center; gap: var(--s1); font: 500 var(--fs-sm)/16px var(--font-ui); color: var(--text); cursor: pointer; user-select: none; }
 .baseline-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .switch-track { position: relative; width: 28px; height: 16px; border-radius: 999px; background: var(--line-strong); transition: background var(--t-ui) var(--ease); }
@@ -346,7 +354,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .baseline-switch.busy { opacity: 0.6; cursor: wait; }
 
 /* Toasts */
-.toasts { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 8; display: flex; flex-direction: column; align-items: center; gap: var(--s1); pointer-events: none; }
+.toasts { position: absolute; left: 50%; bottom: 88px; transform: translateX(-50%); z-index: 8; display: flex; flex-direction: column; align-items: center; gap: var(--s1); pointer-events: none; }
 .toast { padding: var(--s1) var(--s2); border-radius: var(--radius-sm); background: var(--panel-solid); border: 1px solid var(--line); font: 500 var(--fs-md)/20px var(--font-ui); color: var(--text); }
 .toast-ok { border-color: var(--green); }
 .toast-error { border-color: var(--red); color: var(--red); }
