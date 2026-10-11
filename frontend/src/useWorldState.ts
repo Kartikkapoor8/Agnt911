@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { API_HEADERS } from "./api";
 import { newEvents, onEvent, onRunChange } from "./dispatch";
 import { rememberRun } from "./runs";
 import type { TypedEvent, WorldState } from "./types";
@@ -37,7 +38,7 @@ export function useWorldState(): WorldStateResult {
 
     async function poll() {
       try {
-        const res = await fetch(STATE_URL, { cache: "no-store" });
+        const res = await fetch(STATE_URL, { cache: "no-store", headers: API_HEADERS });
         if (!res.ok) throw new Error(`GET /state returned ${res.status}`);
         const body = (await res.json()) as WorldState;
         if (!stopped) {

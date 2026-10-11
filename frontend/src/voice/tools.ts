@@ -1,6 +1,7 @@
 // The dispatcher agent's three client tools. They run in the browser against our backend (through the Vite
 // /api proxy), so ElevenLabs never needs to reach this machine. Each returns a JSON string for the agent.
 
+import { API_HEADERS } from "../api";
 import type { Incident, IncidentType, Plan, Vehicle } from "../types";
 import { badgeIncident } from "./badge";
 import { placeCall, type Placed } from "./geocode";
@@ -43,7 +44,7 @@ export function newCallSession(): CallSession {
 async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const res = await fetch(BASE + path, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: body === undefined ? API_HEADERS : { ...API_HEADERS, "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!res.ok) {

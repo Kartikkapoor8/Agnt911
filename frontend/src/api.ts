@@ -2,7 +2,11 @@
 
 import type { IncidentType, Location } from "./types";
 
-const BASE = "/api"; // Vite proxies /api to the backend
+const BASE = "/api"; // Vite proxies /api to the backend (Vercel rewrites it to the tunnel in production)
+
+/** Sent on every /api request. A free ngrok tunnel shows browsers an HTML warning page instead of the response;
+ *  this header skips it. Harmless everywhere else. */
+export const API_HEADERS: Record<string, string> = { "ngrok-skip-browser-warning": "1" };
 
 export type Mode = "protected" | "baseline";
 
@@ -28,7 +32,7 @@ async function errorText(res: Response): Promise<string> {
 async function post(path: string, body: unknown): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    res = await fetch(BASE + path, { method: "POST", headers: { ...API_HEADERS, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   } catch {
     throw new Error("Backend not reachable");
   }

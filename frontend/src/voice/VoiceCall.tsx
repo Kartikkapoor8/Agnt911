@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { Phone, PhoneOff, Timer } from "lucide-react";
+import { API_HEADERS } from "../api";
 import { toast } from "../toast";
 import { createLatencyTracker, VOICE_DEBUG, type LatencyTracker, type Timing } from "./latency";
 import { MOCK_VOICE, useMockConversation } from "./mock";
@@ -21,7 +22,7 @@ interface Line {
 }
 
 async function fetchToken(): Promise<string> {
-  const res = await fetch("/api/voice/token");
+  const res = await fetch("/api/voice/token", { headers: API_HEADERS });
   const body = await res.json().catch(() => ({}));
   if (!res.ok || typeof body.token !== "string") throw new Error(body.detail ?? `token request failed (${res.status})`);
   return body.token;
