@@ -9,6 +9,7 @@ Usage, from backend/:  .venv/bin/python scripts/batch_runs.py [--n 10] [--until 
 
 import argparse
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -23,10 +24,12 @@ from _demo import auto_resolve
 TRUST_TICKS = (90, 140)
 
 
-async def one_run(until: int, real: bool) -> dict:
+async def one_run(until: int, real: bool, mode: str = "protected") -> dict:
     """Step one scenario run to `until`; return what the table needs."""
     engine = Engine(log_dir=Path("logs"), llm_fn=None if real else fake_llm)
-    trust_at, stopped, escalations = {}, None, []
+    if mode != "protected":
+        await engine.set_mode(mode)  # same reset POST /mode does
+    trust_at, stopped, escalations, calls_at = {}, None, [], {}
     start = time.perf_counter()
     try:
         while engine.world.tick < until:
@@ -37,6 +40,7 @@ async def one_run(until: int, real: bool) -> dict:
                     stopped = f"escalation at tick {engine.world.tick} with nobody to send"
                     break
             await engine.step(1.0)
+            calls_at[engine.world.tick] = llm.call_count()
             if engine.world.tick in TRUST_TICKS:
                 trust_at[engine.world.tick] = {vid: v.trust for vid, v in engine.world.vehicles.items()}
     finally:
@@ -52,7 +56,9 @@ async def one_run(until: int, real: bool) -> dict:
               for e in contradicted if e.vehicle not in hacked or e.tick < hacked[e.vehicle]]
     return dict(escalations=escalations, hacked=hacked, detection=detection, untrusted=untrusted, trust_at=trust_at, honest=honest,
                 calls=llm.call_count(), wall=time.perf_counter() - start, stopped=stopped,
-                failed=engine.last_round_status, log=engine.log.path.name)
+                failed=engine.last_round_status, log=engine.log.path.name, mode=mode, calls_at=calls_at,
+                records=engine._tick_records, incident_times=engine._incident_times,
+                tick=engine.world.tick)
 
 
 def main() -> None:
@@ -61,6 +67,8 @@ def main() -> None:
     parser.add_argument("--runs", "--n", type=int, default=1, dest="runs")
     parser.add_argument("--until", type=int, default=160)
     parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--mode", choices=("protected", "baseline"), default="protected")
+    parser.add_argument("--dump", type=Path, help="write each run's results as JSON into this directory")
     args = parser.parse_args()
     load_dotenv()
     real = bool(os.environ.get("ANTHROPIC_API_KEY")) and not args.mock
@@ -69,7 +77,14 @@ def main() -> None:
     print("| run | hacked (tick) | detected at | untrusted at | trust t90 | trust t140 | honest contradicted | human asked at | calls | wall |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for n in range(1, args.runs + 1):
-        r = asyncio.run(one_run(args.until, real))
+        try:
+            r = asyncio.run(one_run(args.until, real, args.mode))
+        except Exception as exc:  # keep the batch going; report the failed run
+            print(f"| {n} | run failed: {exc!r} | | | | | | | | |", flush=True)
+            continue
+        if args.dump:
+            args.dump.mkdir(parents=True, exist_ok=True)
+            (args.dump / f"{args.mode}-{n:02d}.json").write_text(json.dumps(r, default=str))
         for k, (vid, t) in enumerate(r["hacked"].items()):
             trust = [r["trust_at"].get(tt, {}).get(vid) for tt in TRUST_TICKS]
             honest = (", ".join(r["honest"]) or "none") if k == 0 else ""
@@ -78,10 +93,10 @@ def main() -> None:
             wall = f"{r['wall']:.0f} s" if k == 0 else ""
             print(f"| {n} | {vid} (t{t}) | {r['detection'][vid] or 'never'} | {r['untrusted'][vid] or 'no'} | "
                   f"{trust[0] if trust[0] is not None else '-'} | {trust[1] if trust[1] is not None else '-'} | "
-                  f"{honest} | {asked} | {calls} | {wall} |")
+                  f"{honest} | {asked} | {calls} | {wall} |", flush=True)
         if r["stopped"]:
-            print(f"| {n} | {r['stopped']} | | | | | | | | |")
-    print(f"\nLast run's JSONL: logs/{r['log']}")
+            print(f"| {n} | {r['stopped']} | | | | | | | | |", flush=True)
+    print("\nDone.")
 
 
 if __name__ == "__main__":
