@@ -15,8 +15,8 @@ const GLIDE_MS = 500; // one poll interval, so a marker arrives just as the next
 const LINES = "assignment-lines"; // GeoJSON source and layer: the road still ahead of each vehicle on its way to a call
 const INCIDENT_TYPES: IncidentType[] = ["medical", "fire", "crash", "hazard", "shooting"];
 const FLASH_MS = 1800; // longest one-shot marker animation in styles.css
-const SCENE_LIFT_PX = 26; // on-scene vehicles sit this far above their call's pin...
-const SCENE_SPACING_PX = 28; // ...side by side
+const SCENE_LIFT_PX = 36; // on-scene vehicles sit this far above their call's pin...
+const SCENE_SPACING_PX = 48; // ...side by side
 
 interface Tracked {
   marker: mapboxgl.Marker;
@@ -43,6 +43,15 @@ function boundsOf(points: Location[]): mapboxgl.LngLatBounds {
   const bounds = new mapboxgl.LngLatBounds();
   points.forEach((p) => bounds.extend([p.lng, p.lat]));
   return bounds;
+}
+
+/** Trust ring colour: blue at full trust, amber by 0.7, red by 0.4 (the untrusted line). */
+export function trustColor(trust: number): string {
+  const blue = [59, 130, 255], amber = [255, 176, 32], red = [255, 77, 94];
+  const mix = (a: number[], b: number[], k: number) => a.map((x, i) => Math.round(x + (b[i] - x) * k));
+  const t = Math.max(0, Math.min(1, trust));
+  const rgb = t >= 0.7 ? mix(amber, blue, (t - 0.7) / 0.3) : t >= 0.4 ? mix(red, amber, (t - 0.4) / 0.3) : red;
+  return `rgb(${rgb.join(", ")})`;
 }
 
 /** A custom property from :root, so the line layer's colours live in styles.css with the rest. */
@@ -103,6 +112,7 @@ interface Props {
   negotiating?: boolean; // a round holds the backend clock: dim the map, keep vehicles creeping along
   pendingIncidents?: PendingIncident[]; // dropped calls not yet confirmed by a poll
   placing?: IncidentType | null; // click-to-place: the next map click drops this type
+  activeIncidents?: string[]; // calls being decided right now: their pins show the label without hover
 }
 
 /** Show the Mapbox map with a marker per vehicle (driven along real roads), a pin per incident, and the route still ahead of each vehicle. */
@@ -122,6 +132,7 @@ export function MapView({
   negotiating = false,
   pendingIncidents = [],
   placing = null,
+  activeIncidents = [],
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -304,6 +315,8 @@ export function MapView({
         el.className = `vehicle-marker vehicle-${v.type}`;
         el.dataset.id = v.id;
         el.innerHTML =
+          `<svg class="vm-trust" viewBox="0 0 44 44" aria-hidden="true"><circle class="vm-trust-track" cx="22" cy="22" r="20" pathLength="100"/>` +
+          `<circle class="vm-trust-arc" cx="22" cy="22" r="20" pathLength="100"/></svg>` +
           `<span class="vm-ring"></span><span class="vm-dot">${glyphSvg(v.type, 20)}</span>` +
           `<span class="vm-id">${v.id}</span><span class="vm-skull" title="Hacked (judge view only)">${glyphSvg("skull", 20)}</span>`;
         wrap.addEventListener("click", (e) => {
@@ -355,6 +368,13 @@ export function MapView({
       const k = row.indexOf(v.id);
       t.marker.setOffset(k < 0 ? [0, 0] : [Math.round((k - (row.length - 1) / 2) * SCENE_SPACING_PX), -SCENE_LIFT_PX]);
       t.el.classList.toggle("untrusted", v.untrusted);
+      // Trust ring: the arc is the trust left, its colour slides blue -> amber -> red (CSS transitions it).
+      const arc = t.el.querySelector(".vm-trust-arc") as SVGCircleElement | null;
+      if (arc) {
+        arc.style.strokeDasharray = `${Math.max(0, Math.min(1, v.trust)) * 100} 100`;
+        arc.style.stroke = trustColor(v.trust);
+      }
+      t.el.dataset.trust = v.trust.toFixed(2);
       t.el.classList.toggle("compromised", compromised.includes(v.id));
       t.el.classList.toggle("selected", v.id === selectedId);
       t.el.classList.toggle("selectable", Boolean(onSelect.current));
@@ -420,7 +440,7 @@ export function MapView({
       }
       pin.marker.setLngLat(at);
       const keep = [...pin.el.classList].filter((c) => c.startsWith("anim-")); // don't cut a running animation
-      pin.el.className = [`incident-pin type-${inc.type} sev-${inc.severity} status-${inc.status}`, inc.false_report ? "false-report" : "", inc.source === "operator" ? "operator" : "", ...keep].filter(Boolean).join(" ");
+      pin.el.className = [`incident-pin type-${inc.type} sev-${inc.severity} status-${inc.status}`, inc.false_report ? "false-report" : "", inc.source === "operator" ? "operator" : "", activeIncidents.includes(inc.id) ? "active" : "", ...keep].filter(Boolean).join(" ");
       pin.el.dataset.id = inc.id;
       pin.el.dataset.lat = String(inc.location.lat);
       pin.el.dataset.lng = String(inc.location.lng);
@@ -443,7 +463,7 @@ export function MapView({
         m.fitBounds(boundsOf(points), { padding: fitPadding, maxZoom: m.getZoom(), duration: 800 });
       }
     }
-  }, [incidents, labels]); // vehicles is only read to frame the refit; new incidents are what trigger it
+  }, [incidents, labels, activeIncidents]); // vehicles is only read to frame the refit
 
   // A feed click: pulse the marker, and bring it into view if it is off-screen.
   useEffect(() => {

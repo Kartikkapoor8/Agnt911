@@ -74,3 +74,20 @@ export function narrate(state: WorldState): Narration {
   const calls = `${open.length} call${open.length === 1 ? "" : "s"} open`;
   return { text: `${vehicles.length} units, ${calls}, ${trust}`, tone: "calm", pulse: false };
 }
+
+const ACTIVE_TICKS = 4;
+
+/** Calls whose pin shows its label without hover: being decided, waiting on a human, unassigned, or just decided. */
+export function activeCalls(state: WorldState): string[] {
+  const live = (id: string | null): id is string => Boolean(id && state.incidents[id] && state.incidents[id].status !== "resolved");
+  const ids = new Set<string>();
+  Object.values(state.incidents).forEach((i) => i.status === "open" && ids.add(i.id));
+  (state.escalation?.plans ?? []).forEach((p) => ids.add(p.incident));
+  if (state.integration.last_round_status === "running") callsInRound(state).forEach((id) => ids.add(id));
+  for (let i = state.events.length - 1; i >= 0; i--) {
+    const e = state.events[i];
+    if (state.tick - e.tick > ACTIVE_TICKS) break;
+    if (["call_received", "call_escalated", "plan_committed", "plan_no_consensus", "escalated_to_human"].includes(e.type) && live(e.incident)) ids.add(e.incident);
+  }
+  return [...ids].filter(live);
+}

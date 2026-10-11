@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { InjectRequest, Mode } from "../api";
+import { activeCalls } from "../narrator";
 import { DROP_SEVERITY, usePendingIncidents } from "../pendingIncidents";
 import type { IncidentType, Location, WorldState } from "../types";
 import { EscalationModal } from "./EscalationModal";
@@ -70,6 +71,7 @@ export function LivePage(props: Props) {
             negotiating={negotiating}
             pendingIncidents={pending}
             placing={placing}
+            activeIncidents={activeCalls(state)}
           />
         </MapErrorBoundary>
       </section>
