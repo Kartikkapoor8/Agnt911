@@ -31,7 +31,7 @@ const IDLE_MS = 2500; // how long the fleet may stand still (or the run stay pau
 const FINISHED_TICK = 170;
 const RESTART_GAP_MS = 6000; // never restart more often than this
 
-/** Landing: a 40% card (wordmark, tagline, the seven vehicles, Start run) beside a static 60% map of the live fleet. */
+/** Landing: a 40% card (wordmark, headline, description, the seven vehicles, Start run) beside a static 60% map of the live fleet. */
 export function Landing({ state, leaving, starting, onStart, onRestart }: Props) {
   const fleet = Object.values(state.vehicles)
     .map((v) => ({ id: v.id, type: v.type }))
@@ -62,8 +62,9 @@ export function Landing({ state, leaving, starting, onStart, onRestart }: Props)
     <div className={`landing${leaving ? " leaving" : ""}`}>
       <section className="landing-left">
         <h1 className="landing-wordmark">Agnt<span>911</span></h1>
-        <p className="landing-tagline">Emergency vehicles that dispatch themselves.</p>
-        <p className="landing-desc">{count(fleet.length)} vehicle agents negotiate every 911 call. No dispatcher, no boss agent. Any of them can be hacked.</p>
+        <h2 className="landing-headline">Dispatch support for 911 operators.</h2>
+        <p className="landing-desc">Drop an emergency on the map and {count(fleet.length).toLowerCase()} vehicle agents negotiate who responds. They catch hijacked vehicles and fake calls, and you step in when they can't agree.</p>
+        <p className="landing-note">Simulated future fleet: every vehicle is rich in sensors and data, and acts as its own AI agent.</p>
 
         <span className="landing-label">Fleet</span>
         <ul className="landing-chips" aria-label="Fleet">
