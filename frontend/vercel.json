@@ -1,5 +1,5 @@
 {
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://irk-excluding-sphinx.ngrok-free.dev/:path*" }
+    { "source": "/api/:path*", "destination": "https://backend-production-cd389.up.railway.app/:path*" }
   ]
 }
