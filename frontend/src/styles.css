@@ -50,11 +50,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .start-demo:active:not(:disabled) { transform: scale(0.98); }
 .start-demo:disabled { opacity: 0.7; cursor: wait; }
 
-/* Static landing map: every vehicle in one neutral style, calls in amber; no trust colours, rings or negotiation arcs */
-.landing-map .vm-trust, .landing-map .vm-ring, .landing-map .vm-skull, .landing-map .vm-note, .landing-map .ip-label { display: none !important; }
-.landing-map .vehicle-marker .vm-dot, .landing-map .vehicle-marker.untrusted .vm-dot { background: var(--text); color: var(--bg); box-shadow: none; outline: 0; animation: none; }
-.landing-map .vehicle-marker .vm-id, .landing-map .vehicle-marker.untrusted .vm-id { color: var(--text); }
-.landing-map .incident-pin, .landing-map .incident-pin[class*="sev-"] { --sev: var(--amber); }
+/* Landing map: fixed camera, but the same live fleet as the live page: blue markers, trust rings, routes and the
+   negotiation and catch animations. Only hover labels on calls stay off, so the card's map reads clean. */
+.landing-map .ip-label { display: none; }
 
 .notice { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s1); padding: var(--s3); text-align: center; }
 .notice h2 { margin: 0; font: 600 var(--fs-xl)/28px var(--font-ui); color: var(--red); }

@@ -17,6 +17,12 @@ const GLIDE_MS = 500; // one poll interval, so a marker arrives just as the next
 const LINES = "assignment-lines"; // GeoJSON source and layer: the road still ahead of each vehicle on its way to a call
 const INCIDENT_TYPES: IncidentType[] = ["medical", "fire", "crash", "hazard", "shooting"];
 const FLASH_MS = 1800; // longest one-shot marker animation in styles.css
+const DASH_STEP_MS = 60; // route flow speed
+// One dash cycle in 16 steps: a 3-unit dash sliding along a 4-unit gap, so the dashes flow toward the call.
+const DASH_STEPS: number[][] = [
+  [0, 4, 3], [0.5, 4, 2.5], [1, 4, 2], [1.5, 4, 1.5], [2, 4, 1], [2.5, 4, 0.5], [3, 4, 0],
+  [0, 0.5, 3, 3.5], [0, 1, 3, 3], [0, 1.5, 3, 2.5], [0, 2, 3, 2], [0, 2.5, 3, 1.5], [0, 3, 3, 1], [0, 3.5, 3, 0.5],
+];
 const SCENE_LIFT_PX = 36; // on-scene vehicles sit this far above their call's pin...
 const SCENE_SPACING_PX = 48; // ...side by side
 
@@ -30,7 +36,7 @@ interface Tracked {
   untrusted: boolean;
 }
 
-/** The landing page's fixed camera. Passing it makes the map static, neutral and without the choreography. */
+/** The landing page's fixed camera. Passing it fixes the view and turns off interaction; everything drawn stays live. */
 export interface StaticCamera {
   center: [number, number]; // lng, lat
   zoom: number;
@@ -122,7 +128,7 @@ interface Props {
   pendingIncidents?: PendingIncident[]; // dropped calls not yet confirmed by a poll
   placing?: IncidentType | null; // click-to-place: the next map click drops this type
   activeIncidents?: string[]; // calls being decided right now: their pins show the label without hover
-  staticCamera?: StaticCamera; // landing page: one fixed view, no interaction, no controls, no negotiation arcs
+  staticCamera?: StaticCamera; // landing page: one fixed view, no interaction, no controls (the fleet, routes and animations stay live)
 }
 
 /** Show the Mapbox map with a marker per vehicle (driven along real roads), a pin per incident, and the route still ahead of each vehicle. */
@@ -213,16 +219,28 @@ export function MapView({
     });
     m.on("load", () => {
       m.addSource(LINES, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      // Route = a soft glow, the solid fleet-blue line, and bright dashes flowing toward the call (animated below).
+      const routeColor: mapboxgl.ExpressionSpecification = ["case", ["get", "untrusted"], cssVar("--route-untrusted", "#ff4d5e"), cssVar("--route", "#3b82ff")];
+      m.addLayer({
+        id: `${LINES}-glow`,
+        type: "line",
+        source: LINES,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": routeColor, "line-width": 10, "line-blur": 6, "line-opacity": ["*", ["get", "opacity"], 0.35] },
+      });
       m.addLayer({
         id: LINES,
         type: "line",
         source: LINES,
-        layout: { "line-cap": "round", visibility: cam ? "none" : "visible" },
-        paint: {
-          "line-color": ["case", ["get", "untrusted"], cssVar("--route-untrusted", "#e5484d"), cssVar("--route", "#d0d4dc")],
-          "line-width": 1.6,
-          "line-opacity": ["get", "opacity"],
-        },
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": routeColor, "line-width": 3, "line-opacity": ["get", "opacity"] },
+      });
+      m.addLayer({
+        id: `${LINES}-flow`,
+        type: "line",
+        source: LINES,
+        layout: { "line-cap": "butt", "line-join": "round" },
+        paint: { "line-color": cssVar("--route-flow", "#cfe0ff"), "line-width": 2, "line-opacity": ["get", "opacity"], "line-dasharray": DASH_STEPS[0] },
       });
       linesReady.current = true;
       linesDirty.current = true;
@@ -231,7 +249,6 @@ export function MapView({
         for (const layer of m.getStyle()?.layers ?? []) {
           if (layer.type === "symbol" && /^road/.test(layer.id) && /label/.test(layer.id)) m.setPaintProperty(layer.id, "text-opacity", ROAD_LABEL_OPACITY);
         }
-        return;
       }
       choreo.current = createChoreo(m, {
         vehicleAt: (id) => {
@@ -268,7 +285,14 @@ export function MapView({
 
     let last = performance.now();
     let heldBefore = new Set<string>();
+    let dashStep = -1;
     let frame = requestAnimationFrame(function animate(now) {
+      // Flowing dashes on the routes: step through the dash sequence (the Mapbox animated-line technique).
+      const step = Math.floor(now / DASH_STEP_MS) % DASH_STEPS.length;
+      if (linesReady.current && step !== dashStep) {
+        dashStep = step;
+        if (m.getLayer(`${LINES}-flow`)) m.setPaintProperty(`${LINES}-flow`, "line-dasharray", DASH_STEPS[step]);
+      }
       const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       const c = clock.current;

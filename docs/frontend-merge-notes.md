@@ -11,7 +11,7 @@ Your commits on `main` since the design pass: only `8ee4f2e`. It touches `App.ts
 ## Kept exactly as you made it
 
 - The landing layout: a 40% card (wordmark, tagline, description, "Fleet" label, the seven type chips, **Start run**) beside a 60% map, and the 400 ms fade into the live map.
-- The static landing map: fixed `LANDING_CAMERA`, not interactive, no zoom buttons, quieter road labels, neutral vehicle markers, amber call pins, no rings, arcs or routes.
+- The static landing map: fixed `LANDING_CAMERA`, not interactive, no zoom buttons, quieter road labels. **Changed afterwards at Kartik's request:** it now draws the same live fleet as the live page: blue markers, trust rings, route lines, and the negotiation and catch animations. Your neutral white markers and amber pins are gone. Call labels on the landing map stay hidden.
 - Your type, colours, spacing and button shape on the landing (`.landing-*`, `.start-demo`).
 - The landing's auto-restart once the scripted run has finished, or paused for a human (see "One thing to decide" below).
 - Everything you didn't touch: the live page (status strip, story cards, trust rings, negotiation arcs, catch sequence, judge panel, scoreboard, human popup, voice call, reset).
@@ -49,3 +49,7 @@ Screenshots are in `frontend/screenshots/walkthrough/`:
 ## One thing to decide
 
 Kartik's rule is that a run restarts only from Start demo and from Reset. A page refresh keeps the run. Your landing also restarts the run on its own once the scripted run has finished (t170 and nothing moving) or paused for a human. This only happens while the landing is on screen, so a judge on the live map is never affected. It's a third trigger, though, so confirm it's wanted.
+
+## Routes (after this merge)
+
+Route lines had lost their colour token in the design pass and fell back to near-white. They are now the fleet's electric blue (`--route` in `tokens.css`), red once a vehicle is untrusted, with a soft glow and bright dashes flowing toward the call (`--route-flow`). The same three layers are used on the landing map and on the live map.

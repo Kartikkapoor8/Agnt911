@@ -35,6 +35,11 @@
   --grey: #8a90a0;
   --grey-soft: rgba(138, 144, 160, 0.14);
 
+  /* routes on the map (read by MapView): the fleet's blue, red once untrusted, bright flowing dashes */
+  --route: #3b82ff;
+  --route-untrusted: #ff4d5e;
+  --route-flow: #cfe0ff;
+
   /* incident severity: grey for minor, warming to hot for critical */
   --sev-1: #5f6677;
   --sev-2: #8a90a0;
