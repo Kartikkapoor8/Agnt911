@@ -36,11 +36,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .landing.leaving { opacity: 0; pointer-events: none; }
 .landing-left { position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; min-width: 0; padding: var(--s5) var(--s4) var(--s5) clamp(40px, 7vw, 112px); background: var(--bg-raised); border-right: 1px solid var(--line); overflow-y: auto; }
 .landing-right { position: relative; min-width: 0; min-height: 0; background: var(--bg); }
-.landing-wordmark { margin: 0 0 24px; font: 700 clamp(40px, 4vw, 56px)/1.05 var(--font-ui); letter-spacing: -0.03em; color: var(--text); }
+.landing-wordmark { margin: 0 0 12px; font: 700 clamp(56px, 6vw, 88px)/1.05 var(--font-ui); letter-spacing: -0.03em; color: var(--text); }
 .landing-wordmark span { color: var(--accent); }
-.landing-headline { margin: 0; max-width: 560px; font: 600 clamp(32px, 3.4vw, 48px)/1.1 var(--font-ui); letter-spacing: -0.02em; color: var(--text); }
-.landing-desc { margin: 20px 0 0; max-width: 520px; font: 400 18px/1.6 var(--font-ui); color: var(--text-2); }
-.landing-note { margin: 16px 0 0; max-width: 480px; font: 400 14px/1.5 var(--font-ui); color: color-mix(in srgb, var(--text-2) 60%, transparent); }
+.landing-headline { margin: 0; max-width: 560px; font: 600 clamp(22px, 2.2vw, 30px)/1.2 var(--font-ui); letter-spacing: -0.02em; color: var(--text); }
+.landing-desc { margin: 20px 0 0; max-width: 560px; font: 400 20px/1.6 var(--font-ui); color: var(--text-2); }
+.landing-note { margin: 20px 0 0; max-width: 480px; font: 400 14px/1.5 var(--font-ui); color: color-mix(in srgb, var(--text-2) 60%, transparent); }
 .landing-label { margin-top: 40px; font: 500 13px/1.4 var(--font-ui); color: var(--text-2); }
 .landing-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: var(--s1) 0 0; padding: 0; list-style: none; max-width: 480px; }
 .landing-chip { display: inline-flex; align-items: center; justify-content: center; gap: var(--s1); width: 76px; height: 36px; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); color: var(--text); }

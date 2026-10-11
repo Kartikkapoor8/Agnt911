@@ -64,7 +64,6 @@ export function Landing({ state, leaving, starting, onStart, onRestart }: Props)
         <h1 className="landing-wordmark">Agnt<span>911</span></h1>
         <h2 className="landing-headline">Dispatch support for 911 operators.</h2>
         <p className="landing-desc">Drop an emergency on the map and {count(fleet.length).toLowerCase()} vehicle agents negotiate who responds. They catch hijacked vehicles and fake calls, and you step in when they can't agree.</p>
-        <p className="landing-note">Simulated future fleet: every vehicle is rich in sensors and data, and acts as its own AI agent.</p>
 
         <span className="landing-label">Fleet</span>
         <ul className="landing-chips" aria-label="Fleet">
@@ -75,6 +74,7 @@ export function Landing({ state, leaving, starting, onStart, onRestart }: Props)
             </li>
           ))}
         </ul>
+        <p className="landing-note">Simulated future fleet: every vehicle is rich in sensors and data, and acts as its own AI agent.</p>
 
         <button className="start-demo" onClick={onStart} disabled={starting || leaving}>
           {starting ? "Starting…" : "Start run"}
