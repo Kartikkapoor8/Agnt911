@@ -26,9 +26,18 @@ export function onEvent(event: TypedEvent, meta: EventMeta): void {
   if (!meta.backfill) animators.forEach((fn) => fn(event, meta));
 }
 
+const resetters = new Set<(runId: string) => void>();
+
+/** Run fn whenever a new run starts. Returns an unsubscribe function. */
+export function onRunReset(fn: (runId: string) => void): () => void {
+  resetters.add(fn);
+  return () => resetters.delete(fn);
+}
+
 /** A new run started (first connect or POST /mode): drop everything keyed to the old one. */
 export function onRunChange(runId: string): void {
   resetStory(runId);
+  resetters.forEach((fn) => fn(runId));
 }
 
 const OVERLAP = 4; // how many trailing events must match to place the previous window inside the new one

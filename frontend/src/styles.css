@@ -423,3 +423,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 
 .result-mark { display: inline-flex; align-items: center; gap: 2px; }
+
+/* Negotiation arcs: ETA labels at each arc's midpoint (choreo.ts) */
+.arc-eta { padding: 0 var(--s-half); border-radius: 4px; background: var(--panel-solid); border: 1px solid var(--line); font: 600 10px/14px var(--font-mono); color: var(--accent-bright); white-space: nowrap; pointer-events: none; transition: opacity var(--t-ui) var(--ease); }
+.arc-eta:empty { display: none; }
+.arc-eta[data-state="lead"], .arc-eta[data-state="won"] { color: #fff; border-color: var(--accent); background: var(--accent); }
+.arc-eta[data-state="won_amber"] { color: #1a1205; border-color: var(--amber); background: var(--amber); }
+.arc-eta[data-state="lost"] { color: var(--text-3); }

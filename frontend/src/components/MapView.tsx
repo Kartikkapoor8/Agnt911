@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { onLiveEvent } from "../dispatch";
+import { createChoreo, type Choreo } from "../choreo";
+import { onLiveEvent, onRunReset } from "../dispatch";
 import { glyphSvg, INCIDENT_DRAG_TYPE } from "../glyphs";
 import { advanceTrip, startTrip, updateTrip, type Trip } from "../motion";
 import type { PendingIncident } from "../pendingIncidents";
@@ -151,6 +152,7 @@ export function MapView({
   placingNow.current = placing;
   const onDropNow = useRef(onDropIncident);
   onDropNow.current = onDropIncident;
+  const choreo = useRef<Choreo | null>(null);
   const linesReady = useRef(false);
   const linesDirty = useRef(true);
   const pending = useRef(new Map<string, string[]>()); // animations for markers that don't exist yet
@@ -188,9 +190,21 @@ export function MapView({
       });
       linesReady.current = true;
       linesDirty.current = true;
+      choreo.current = createChoreo(m, {
+        vehicleAt: (id) => {
+          const at = vehicleMarkers.current.get(id)?.marker.getLngLat();
+          return at ? [at.lng, at.lat] : null;
+        },
+        callAt: (id) => {
+          const inc = incidentsNow.current[id];
+          return inc ? [inc.location.lng, inc.location.lat] : null;
+        },
+        color: cssVar,
+      });
     });
 
     let last = performance.now();
+    let heldBefore = new Set<string>();
     let frame = requestAnimationFrame(function animate(now) {
       const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
@@ -208,10 +222,14 @@ export function MapView({
         if (k < 1) moving = true;
         t.marker.setLngLat([t.from[0] + (t.to[0] - t.from[0]) * k, t.from[1] + (t.to[1] - t.from[1]) * k]);
       }
+      choreo.current?.frame(now);
+      const held = choreo.current?.holding() ?? new Set<string>();
+      if (held.size || heldBefore.size) linesDirty.current = true; // a winner arc is handing over to its route line
+      heldBefore = held;
       if (linesReady.current && (moving || linesDirty.current)) {
         linesDirty.current = false;
         const features = [...vehicleMarkers.current].flatMap(([id, t]) =>
-          t.trip
+          t.trip && !held.has(id)
             ? [{
                 type: "Feature" as const,
                 properties: { untrusted: t.untrusted, vehicle: id, road: t.trip.path.road },
@@ -243,12 +261,18 @@ export function MapView({
       vehicleMarkers.current.clear();
       incidentMarkers.current.clear();
       pendingMarkers.current.clear();
+      choreo.current?.clear();
+      choreo.current = null;
       m.remove();
       map.current = null;
       centered.current = false;
       linesReady.current = false;
     };
   }, []);
+
+  // Every live event goes to the map choreography (negotiation arcs); a new run clears it.
+  useEffect(() => onLiveEvent((e) => choreo.current?.push(e)), []);
+  useEffect(() => onRunReset(() => choreo.current?.clear()), []);
 
   // Live events animate their marker once. A pin for a brand-new call is created after this runs, so queue it.
   useEffect(
