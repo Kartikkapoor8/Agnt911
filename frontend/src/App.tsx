@@ -2,15 +2,14 @@ import { useState } from "react";
 import { postInject, postMode, postResolve, type InjectRequest, type Mode } from "./api";
 import { toast } from "./toast";
 import { useWorldState } from "./useWorldState";
-import { LandingPage } from "./components/LandingPage";
 import { LivePage } from "./components/LivePage";
 
-type Page = "landing" | "live";
+type Page = "intro" | "live";
 
 /** Top-level app: owns the polled state, the current page, and the selected vehicle. */
 export function App() {
   const { state, error } = useWorldState();
-  const [page, setPage] = useState<Page>("landing");
+  const [page, setPage] = useState<Page>("intro");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   if (!state) {
@@ -36,22 +35,25 @@ export function App() {
     onResolve: async (assignments: Record<string, string | null>) => void (await postResolve(assignments)),
   };
 
-  // A run starts in Protected: if the backend was left on the baseline, Start run switches it back (a new run).
+  // Start demo: a fresh run of the scripted scenario in Protected (POST /mode resets to t0), then the panels.
   async function start() {
-    if (state?.mode === "baseline") {
-      try {
-        await postMode("protected");
-      } catch (err) {
-        toast(`Could not switch to Protected: ${err instanceof Error ? err.message : String(err)}`, "error");
-      }
+    try {
+      await postMode("protected");
+    } catch (err) {
+      toast(`Could not start a fresh run: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
     setPage("live");
   }
 
-  if (page === "live") {
-    return <LivePage state={state} stale={error !== null} selectedId={selectedId} onSelect={setSelectedId} {...handlers} />;
-  }
-  // The backend has no start/reset endpoint: the scripted run starts with the server, so Start run opens the live page
-  // (switching a leftover baseline run back to Protected first).
-  return <LandingPage state={state} stale={error !== null} onStart={() => void start()} />;
+  return (
+    <LivePage
+      state={state}
+      stale={error !== null}
+      selectedId={selectedId}
+      onSelect={setSelectedId}
+      intro={page === "intro"}
+      onStart={() => void start()}
+      {...handlers}
+    />
+  );
 }

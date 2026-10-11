@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Play } from "lucide-react";
 import type { InjectRequest, Mode } from "../api";
 import { activeCalls } from "../narrator";
 import { DROP_SEVERITY, usePendingIncidents } from "../pendingIncidents";
@@ -21,7 +22,11 @@ interface Props {
   onSetMode: (mode: Mode) => Promise<void>;
   onInject: (req: InjectRequest) => Promise<void>;
   onResolve: (assignments: Record<string, string | null>) => Promise<void>;
+  intro: boolean; // first load: the map and a Start demo button, nothing else
+  onStart: () => void;
 }
+
+const NONE = {}; // the intro shows the bare map
 
 // Keep framed points clear of the floating panels: feed on the left, judge console on the right.
 const FIT_PADDING = { top: 72, bottom: 72, left: 360, right: 340 };
@@ -33,7 +38,6 @@ export function LivePage(props: Props) {
   const [placing, setPlacing] = useState<IncidentType | null>(null); // click-to-place
   const [dropSeverity, setDropSeverity] = useState(DROP_SEVERITY);
   const { pending, drop } = usePendingIncidents(state.incidents);
-  const negotiating = state.integration.last_round_status === "running";
 
   const onDropIncident = (type: IncidentType, at: Location) => {
     setPlacing(null);
@@ -56,8 +60,8 @@ export function LivePage(props: Props) {
       <section className="live-map">
         <MapErrorBoundary>
           <MapView
-            vehicles={state.vehicles}
-            incidents={state.incidents}
+            vehicles={props.intro ? NONE : state.vehicles}
+            incidents={props.intro ? NONE : state.incidents}
             center={state.map_center}
             labels={state.labels}
             selectedId={selectedId}
@@ -68,13 +72,22 @@ export function LivePage(props: Props) {
             onDropIncident={onDropIncident}
             fitPadding={FIT_PADDING}
             tick={state.tick}
-            negotiating={negotiating}
+            negotiating={false /* the map never dims during a round; the status strip pulses instead */}
             pendingIncidents={pending}
             placing={placing}
             activeIncidents={activeCalls(state)}
           />
         </MapErrorBoundary>
       </section>
+      {props.intro ? (
+        <div className="intro">
+          <button className="start-demo" onClick={props.onStart}>
+            <Play size={20} aria-hidden />
+            Start demo
+          </button>
+        </div>
+      ) : (
+        <>
       <TopBar state={state} stale={stale} />
       <FeedPanel
         runId={state.run_id}
@@ -88,6 +101,8 @@ export function LivePage(props: Props) {
       <MetricsDrawer state={state} onSetMode={props.onSetMode} />
       <Toasts />
       <EscalationModal state={state} onResolve={props.onResolve} />
+        </>
+      )}
     </div>
   );
 }

@@ -333,8 +333,7 @@ export function MapView({
       m.fitBounds(boundsOf(points), { padding: fitPadding, maxZoom: 14.5, duration: 0 });
       centered.current = true;
     } else if (center) {
-      m.jumpTo({ center: [center.lng, center.lat] });
-      centered.current = true;
+      m.jumpTo({ center: [center.lng, center.lat], zoom: 14 }); // nothing to frame yet (the intro): frame it when data comes
     }
   }, [vehicles, incidents, center]); // fitPadding is read once, on the first frame
 
