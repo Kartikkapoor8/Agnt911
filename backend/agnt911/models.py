@@ -48,8 +48,9 @@ class Incident(BaseModel):
     location: Location
     status: IncidentStatus = "open"
     assigned: list[str] = Field(default_factory=list)
-    # "911" for scripted and real calls; "operator" for a call an outside caller placed (see callers.py).
-    source: Literal["911", "operator"] = "911"
+    # "911" for scripted and real calls; "operator" for a call an outside caller placed (see callers.py);
+    # "caller" for a call taken by the voice dispatcher (frontend/src/voice).
+    source: Literal["911", "operator", "caller"] = "911"
     source_id: str | None = None
     # Set when the first police car on scene finds nothing there; the incident is then closed as resolved.
     false_report: bool = False

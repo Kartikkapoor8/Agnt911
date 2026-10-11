@@ -446,9 +446,9 @@ class Engine:
             self._record_created(incident, label)
 
     async def update_incident(self, incident_id: str, changes: dict) -> None:
-        """Update type, severity or display label without changing shared models."""
-        if not changes or set(changes) - {"type", "severity", "label"}:
-            raise ValueError("Only type, severity and label can change")
+        """Update type, severity, location or display label without changing shared models."""
+        if not changes or set(changes) - {"type", "severity", "location", "label"}:
+            raise ValueError("Only type, severity, location and label can change")
         changes = dict(changes)
         label = changes.pop("label", None)
         if label is not None and not isinstance(label, str):

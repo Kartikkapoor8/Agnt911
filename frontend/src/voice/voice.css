@@ -1,0 +1,26 @@
+/* Voice dispatcher (frontend/src/voice). Uses the app's tokens; removed with the folder. */
+
+.voice-call { display: flex; flex-direction: column; gap: var(--s1); padding-bottom: var(--s2); margin-bottom: var(--s1); border-bottom: 1px solid var(--line); }
+.voice-notice { margin: 0; font: 400 var(--fs-xs)/16px var(--font-ui); color: var(--text-3); }
+.voice-row { display: flex; align-items: center; gap: var(--s1); }
+.voice-btn { display: inline-flex; align-items: center; gap: var(--s1); height: 32px; padding: 0 var(--s2); border: 0; border-radius: 999px; font: 600 var(--fs-md)/1 var(--font-ui); color: #fff; cursor: pointer; transition: opacity var(--t-ui) var(--ease); }
+.voice-btn.start { background: var(--green); color: var(--bg); }
+.voice-btn.end { background: var(--red); }
+.voice-call[data-phase="connecting"] .voice-btn.end { animation: voice-ring 1s var(--ease) infinite; }
+@keyframes voice-ring { 0%, 100% { box-shadow: 0 0 0 0 var(--red-soft); } 50% { box-shadow: 0 0 0 6px var(--red-soft); } }
+.voice-status { font: 600 var(--fs-xs)/16px var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 6px; border-radius: var(--radius-xs); color: var(--text-2); background: var(--grey-soft); }
+.voice-status.is-connecting { color: var(--amber); background: var(--amber-soft); }
+.voice-status.is-live { color: var(--green); background: var(--green-soft); }
+.voice-status.is-error { color: var(--red); background: var(--red-soft); }
+.voice-countdown { margin-left: auto; font: 600 var(--fs-md)/1 var(--font-mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.voice-transcript { max-height: 160px; overflow-y: auto; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--hover); display: flex; flex-direction: column; gap: 4px; }
+.voice-line { margin: 0; font: 400 var(--fs-sm)/16px var(--font-ui); color: var(--text); }
+.voice-line b { font-weight: 600; margin-right: 4px; }
+.voice-line.agent b { color: var(--accent-bright); }
+.voice-line.user b { color: var(--amber); }
+.voice-line.wait { color: var(--text-3); }
+.voice-result { margin: 0; font: 400 var(--fs-sm)/16px var(--font-ui); color: var(--green); }
+
+/* The "called in" badge on a voice call's map pin (badge.ts). */
+.voice-badge { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%); padding: 0 6px; border-radius: 999px; background: var(--green); color: var(--bg); font: 600 10px/16px var(--font-ui); white-space: nowrap; pointer-events: none; animation: voice-badge-in 400ms var(--ease); }
+@keyframes voice-badge-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }

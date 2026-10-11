@@ -1,8 +1,13 @@
 """Single-process FastAPI endpoints using the team's shared backend package."""
 
+import asyncio
 from contextlib import asynccontextmanager
+import json
 import os
 from typing import Literal
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +16,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from ..fake_llm import fake_llm
 from .runtime import Engine
 from .world import load_scenario
+
+ELEVENLABS_TOKEN_URL = "https://api.elevenlabs.io/v1/convai/conversation/token"
 
 
 class Injection(BaseModel):
@@ -49,6 +56,14 @@ class NewIncident(BaseModel):
     severity: int = Field(ge=1, le=5)
     location: dict
     label: str | None = Field(default=None, max_length=200)
+    source: Literal["911", "caller"] = "911"
+
+
+class IncidentChange(BaseModel):
+    """Later details for a call already on the map (the voice dispatcher's follow-up update_incident)."""
+    severity: int | None = Field(default=None, ge=1, le=5)
+    label: str | None = Field(default=None, max_length=200)
+    location: dict | None = None
 
 
 class HumanResolution(BaseModel):
@@ -121,10 +136,36 @@ def create_app(engine: Engine | None = None) -> FastAPI:
             n += 1
         try:
             await eng.add_incident({"id": f"J{n}", "type": body.type, "severity": body.severity,
-                                    "location": body.location, "label": body.label})
+                                    "location": body.location, "label": body.label, "source": body.source})
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         return {"accepted": True, "incident": f"J{n}"}
+
+    @app.post("/incident/{incident_id}")
+    async def change_incident(incident_id: str, body: IncidentChange, request: Request):
+        """Update severity, label or location of a call already on the map; the fleet renegotiates it."""
+        try:
+            await request.app.state.engine.update_incident(incident_id, body.model_dump(exclude_none=True))
+        except KeyError:
+            raise HTTPException(404, "Unknown incident") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"accepted": True, "incident": incident_id}
+
+    @app.get("/voice/token")
+    async def voice_token():
+        """Fetch a WebRTC conversation token for the ElevenLabs dispatcher agent; the API key never leaves the backend."""
+        from dotenv import load_dotenv
+        load_dotenv()
+        key, agent = os.getenv("ELEVENLABS_API_KEY"), os.getenv("ELEVENLABS_AGENT_ID")
+        if not key or not agent:
+            raise HTTPException(503, "Set ELEVENLABS_API_KEY and ELEVENLABS_AGENT_ID in backend/.env")
+        req = urllib.request.Request(f"{ELEVENLABS_TOKEN_URL}?agent_id={urllib.parse.quote(agent)}", headers={"xi-api-key": key})
+        try:
+            body = await asyncio.to_thread(lambda: json.load(urllib.request.urlopen(req, timeout=10)))
+        except (urllib.error.URLError, ValueError) as exc:
+            raise HTTPException(502, f"ElevenLabs token request failed: {exc}") from None
+        return {"token": body["token"]}
 
     @app.post("/resolve")
     async def resolve(body: HumanResolution, request: Request):

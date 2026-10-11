@@ -49,7 +49,7 @@ Source of truth: `backend/agnt911/models.py`. Locations are `{"lat": float, "lng
 | location | Location | |
 | status | `"open"` \| `"assigned"` \| `"resolved"` | default `"open"` |
 | assigned | list of vehicle ids | default empty |
-| source | `"911"` \| `"operator"` | default `"911"`; `"operator"` for a call placed by an outside caller (fake_call preset) |
+| source | `"911"` \| `"operator"` \| `"caller"` | default `"911"`; `"operator"` for a call placed by an outside caller (fake_call preset); `"caller"` for a call the voice dispatcher took (frontend/src/voice) |
 | source_id | string or null | the outside caller's id, e.g. `"caller-1"` |
 | false_report | bool | default false; set when the first police car on scene finds nothing (the incident is then `resolved`) |
 

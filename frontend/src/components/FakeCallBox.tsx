@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import { Mic, Phone } from "lucide-react";
 import type { InjectRequest } from "../api";
 import type { Preset } from "../types";
@@ -9,6 +9,9 @@ interface Props {
 }
 
 type Result = { ok: boolean; text: string } | null;
+
+// The voice dispatcher, if frontend/src/voice exists; the glob finds nothing once that folder is deleted.
+const VoiceCall = Object.values(import.meta.glob<{ VoiceCall: ComponentType }>("../voice/index.ts", { eager: true }))[0]?.VoiceCall;
 
 /** Fake call: an outside caller reports an emergency that isn't there (POST /inject with the fake_call preset). */
 export function FakeCallBox({ presets, onInject }: Props) {
@@ -38,6 +41,7 @@ export function FakeCallBox({ presets, onInject }: Props) {
 
   return (
     <section className="judge-section fake-call">
+      {VoiceCall && <VoiceCall />}
       <div className="fake-row">
         <input
           type="text"
@@ -47,11 +51,13 @@ export function FakeCallBox({ presets, onInject }: Props) {
           placeholder="Caller says… (a shooting downtown)"
           aria-label="What the caller says (kept on this screen; the backend builds the call from the preset)"
         />
-        <span className="mic" title="voice tomorrow">
-          <button className="icon-btn" disabled aria-label="Voice (tomorrow)">
-            <Mic size={16} />
-          </button>
-        </span>
+        {!VoiceCall && (
+          <span className="mic" title="voice tomorrow">
+            <button className="icon-btn" disabled aria-label="Voice (tomorrow)">
+              <Mic size={16} />
+            </button>
+          </span>
+        )}
       </div>
       <button className="inject" disabled={sending} onClick={place}>
         <Phone size={16} aria-hidden />

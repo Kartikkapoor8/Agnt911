@@ -39,7 +39,7 @@ export interface Incident {
   location: Location;
   status: IncidentStatus;
   assigned: string[];
-  source: "911" | "operator"; // "operator" = placed by an outside caller (the fake_call preset)
+  source: "911" | "operator" | "caller"; // "operator" = placed by an outside caller (the fake_call preset); "caller" = the voice dispatcher
   source_id: string | null; // that caller's id, e.g. "caller-1"
   false_report: boolean; // a police car arrived and found nothing; the call is then resolved
 }
