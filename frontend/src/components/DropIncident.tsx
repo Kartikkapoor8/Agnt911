@@ -17,18 +17,15 @@ export function DropIncident({ armed, onArm, severity, onSeverity }: Props) {
   return (
     <section className="judge-section drop-incident">
       <div className="drop-head">
-        <h3>Drop incident</h3>
+        <span className="field-label">Severity</span>
         <div className="drop-sev" role="radiogroup" aria-label="Severity of dropped calls">
           {SEVERITIES.map((n) => (
             <button key={n} role="radio" aria-checked={severity === n} className={severity === n ? "on" : ""} onClick={() => onSeverity(n)}>
-              sev {n}
+              {n}
             </button>
           ))}
         </div>
       </div>
-      <p className="hint">
-        {armed ? `Click the map to place the ${armed} call (Esc cancels).` : `Drag an icon onto the map, or click one and then the map. Severity ${severity}.`}
-      </p>
       <div className="drop-icons">
         {TYPES.map((t) => (
           <div
@@ -52,6 +49,9 @@ export function DropIncident({ armed, onArm, severity, onSeverity }: Props) {
           </div>
         ))}
       </div>
+      <p className="hint">
+        {armed ? `Click the map to place the ${armed} call (Esc cancels).` : "Drag an icon onto the map, or click one and then the map."}
+      </p>
     </section>
   );
 }

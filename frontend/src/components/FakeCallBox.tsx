@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Mic, Phone } from "lucide-react";
 import type { InjectRequest } from "../api";
 import type { Preset } from "../types";
 
@@ -26,7 +27,7 @@ export function FakeCallBox({ presets, onInject }: Props) {
       // /inject takes preset_id or text, never both, and the backend builds the call from the preset,
       // so the caller's words stay on this screen.
       await onInject({ vehicleId: null, presetId: preset.id });
-      setResult({ ok: true, text: `Accepted: ${String(preset.preset.source_id ?? "a caller")} reported a ${String(preset.preset.type ?? "call")}.` });
+      setResult({ ok: true, text: `${String(preset.preset.source_id ?? "A caller")} reported a ${String(preset.preset.type ?? "call")}. The first police car there will find nothing.` });
       setNote("");
     } catch (err) {
       setResult({ ok: false, text: err instanceof Error ? err.message : String(err) });
@@ -37,18 +38,24 @@ export function FakeCallBox({ presets, onInject }: Props) {
 
   return (
     <section className="judge-section fake-call">
-      <h3>Fake call</h3>
-      <p className="hint">No vehicle needed. The first police car on scene finds nothing and the caller loses credibility.</p>
-      <input
-        type="text"
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        maxLength={200}
-        placeholder={`Caller says… (${preset.label.toLowerCase()})`}
-        aria-label="What the caller says (not sent: the backend builds the call from the preset)"
-      />
-      <button className="inject secondary" disabled={sending} onClick={place}>
-        {sending ? "Placing…" : preset.label}
+      <div className="fake-row">
+        <input
+          type="text"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          maxLength={200}
+          placeholder="Caller says… (a shooting downtown)"
+          aria-label="What the caller says (kept on this screen; the backend builds the call from the preset)"
+        />
+        <span className="mic" title="voice tomorrow">
+          <button className="icon-btn" disabled aria-label="Voice (tomorrow)">
+            <Mic size={16} />
+          </button>
+        </span>
+      </div>
+      <button className="inject" disabled={sending} onClick={place}>
+        <Phone size={16} aria-hidden />
+        {sending ? "Calling…" : "Call it in"}
       </button>
       {result && <p className={result.ok ? "ok-text" : "error-text"}>{result.text}</p>}
     </section>

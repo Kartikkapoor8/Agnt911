@@ -36,7 +36,7 @@ export function FleetPanel({ state, selectedId, onSelect }: Props) {
 
   return (
     <section className="judge-section fleet-strip">
-      <h3>Fleet</h3>
+      <span className="field-label">Pick a vehicle, or click one on the map</span>
       <div className="fleet-chips">
         {Object.values(state.vehicles).map((v) => {
           const hacked = state.compromised.includes(v.id);

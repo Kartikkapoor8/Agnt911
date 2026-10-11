@@ -245,7 +245,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .kind-vote { color: var(--text); }
 
 /* Judge panel */
-.judge-panel { top: var(--s2); right: var(--s2); bottom: 112px; width: 320px; }
+.judge-panel { top: var(--s2); right: var(--s2); width: 344px; max-height: calc(100vh - 128px); }
 .judge-body { flex: 1; min-height: 0; overflow-y: auto; }
 .judge-section { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2); border-top: 1px solid var(--line); }
 .judge-section:first-child { border-top: 0; }
@@ -449,3 +449,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .ip-flag { display: none; position: absolute; left: 50%; top: calc(100% + 2px); transform: translateX(-50%); font: 600 10px/14px var(--font-ui); color: var(--grey); white-space: nowrap; pointer-events: none; }
 .incident-pin.false-report .ip-flag { display: block; }
 .incident-pin.false-report.status-resolved { opacity: 0.6; transform: none; }
+
+/* Judge panel: segmented tabs */
+.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-half); margin: var(--s1) var(--s2) 0; padding: var(--s-half); border-radius: var(--radius-sm); background: rgba(0, 0, 0, 0.3); border: 1px solid var(--line); }
+.segmented button { display: inline-flex; align-items: center; justify-content: center; gap: var(--s-half); height: 32px; border: 0; border-radius: var(--radius-xs); background: none; color: var(--text-2); font: 500 var(--fs-sm)/1 var(--font-ui); cursor: pointer; transition: all var(--t-ui) var(--ease); }
+.segmented button:hover { color: var(--text); }
+.segmented button.on { background: var(--hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.field-label { font: 500 var(--fs-xs)/16px var(--font-ui); color: var(--text-2); }
+.fleet-strip { padding-bottom: 0; }
+.judge-section + .judge-section { border-top: 0; }
+.fake-row { display: flex; gap: var(--s1); }
+.icon-btn { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: var(--radius-sm); border: 1px solid var(--line); background: transparent; color: var(--text-2); cursor: pointer; }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.mic { display: inline-flex; }
+.fake-call .inject { background: var(--text); color: var(--bg); }
