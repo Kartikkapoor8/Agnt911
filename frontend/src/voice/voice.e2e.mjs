@@ -35,7 +35,9 @@ async function startCall() {
 
 try {
   await page.goto(APP);
-  await page.locator(".start-demo").click();
+  // A refresh no longer resets: a run past t0 opens on the live map, a run at t0 on the landing.
+  await page.waitForSelector(".start-demo, .status-strip");
+  if (await page.locator(".start-demo").count()) await page.locator(".start-demo").click();
   await page.getByRole("tab", { name: "Fake call" }).click();
   check("notice before Start", await page.getByText("Demo only. Does not contact emergency services.").isVisible());
 
