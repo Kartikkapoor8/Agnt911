@@ -35,9 +35,10 @@ export interface MapTarget {
   id: string;
 }
 
-/** A feed click: pulse this marker. nonce changes on every click so the same line can fire again. */
+/** A feed click: pan to this marker and pulse it, plus the vehicles involved. nonce makes a repeat click fire again. */
 export interface Highlight extends MapTarget {
   nonce: number;
+  involved?: string[];
 }
 
 function boundsOf(points: Location[]): mapboxgl.LngLatBounds {
@@ -511,15 +512,18 @@ export function MapView({
     }
   }, [incidents, labels, activeIncidents]); // vehicles is only read to frame the refit
 
-  // A feed click: pulse the marker, and bring it into view if it is off-screen.
+  // A feed click: pan to the call (or vehicle) and highlight it and the vehicles involved for 2 s.
   useEffect(() => {
     const m = map.current;
     if (!m || !highlight) return;
     const t = highlight.kind === "vehicle" ? vehicleMarkers.current.get(highlight.id) : incidentMarkers.current.get(highlight.id);
     if (!t) return;
-    flash(t.el, "anim-highlight", 2400);
-    const at = t.marker.getLngLat();
-    if (!m.getBounds()?.contains(at)) m.easeTo({ center: at, duration: 600 });
+    flash(t.el, "anim-highlight", 2000);
+    for (const vid of highlight.involved ?? []) {
+      const v = vehicleMarkers.current.get(vid);
+      if (v) flash(v.el, "anim-highlight", 2000);
+    }
+    m.easeTo({ center: t.marker.getLngLat(), duration: 400, padding: typeof fitPadding === "number" ? fitPadding : fitPadding });
   }, [highlight]);
 
   // Drop target for the judge panel's incident icons.

@@ -458,3 +458,29 @@ export function checkSentence(card: CheckCard): string {
     : "";
   return `${joinAnd(card.verifiers)} checked ${card.vehicle}'s ${joinAnd(card.whats)}: FALSE.${trust}`;
 }
+
+/** The one-line outcome of a decision card: "A2 + P1 sent 7–0", "A1 pulled from I3", "asking a human". */
+export function decisionLine(card: DecisionCard): string {
+  const pulled = card.pulled.map((p) => (p.from ? `${p.vehicle} pulled from ${p.from}` : `${p.vehicle} sent while free`));
+  const voted = card.assigned.filter((v) => !card.pulled.some((p) => p.vehicle === v));
+  switch (card.status) {
+    case "negotiating": return "negotiating…";
+    case "dispatched": return voted.length ? `dispatcher sent ${voted.join(" + ")}` : "dispatcher sent nobody";
+    case "escalated": return "asking a human";
+    case "no_consensus": return card.assigned.length ? `${card.assigned.join(" + ")} sent, no agreement` : "no agreement, nobody free";
+    case "agreed": {
+      const parts = [...(voted.length ? [`${voted.join(" + ")} sent`] : []), ...pulled];
+      return parts.join(", ") || "nobody assigned";
+    }
+  }
+}
+
+/** Vehicles a card is about, for highlighting on the map. */
+export function involvedIn(item: StoryItem): string[] {
+  switch (item.kind) {
+    case "decision": return [...new Set([...item.assigned, ...(item.escalation?.options ?? [])])];
+    case "check": return [item.vehicle, ...item.verifiers];
+    case "raw": return item.line.vehicle ? [item.line.vehicle] : [];
+    default: return item.vehicle ? [item.vehicle] : [];
+  }
+}
