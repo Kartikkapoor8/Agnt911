@@ -1,16 +1,71 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { postInject, postMode, postResolve, type InjectRequest, type Mode } from "./api";
 import { toast } from "./toast";
+import type { WorldState } from "./types";
 import { useWorldState } from "./useWorldState";
+import { Landing } from "./components/Landing";
 import { LivePage } from "./components/LivePage";
 
-type Page = "intro" | "live";
+const FADE_MS = 400;
+let resetOnLoad = false; // module flag: StrictMode runs the mount effect twice, the reset should happen once
 
-/** Top-level app: owns the polled state, the current page, and the selected vehicle. */
+/** A fresh run in Protected: every vehicle at trust 1.0, nobody compromised, no callers. Returns its run id. */
+async function freshRun(): Promise<string | null> {
+  try {
+    const body = (await postMode("protected")) as WorldState;
+    return body.run_id;
+  } catch (err) {
+    toast(`Could not start a fresh run: ${err instanceof Error ? err.message : String(err)}`, "error");
+    return null;
+  }
+}
+
+/** Top-level app: the landing screen over the live page, the polled state, the selected vehicle, and reset. */
 export function App() {
   const { state, error } = useWorldState();
-  const [page, setPage] = useState<Page>("intro");
+  const [landing, setLanding] = useState(true);
+  const [leaving, setLeaving] = useState(false); // landing fading out
+  const [awaitRun, setAwaitRun] = useState<string | null>(null); // Start demo waits for its fresh run to show up
+  const [liveKey, setLiveKey] = useState(0); // remounting the live page clears its client state
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // A page refresh is a reset for the next judge.
+  useEffect(() => {
+    if (resetOnLoad) return;
+    resetOnLoad = true;
+    void freshRun();
+  }, []);
+
+  // The fresh run is on screen (t0): fade the landing out into the live map.
+  useEffect(() => {
+    if (!awaitRun || state?.run_id !== awaitRun) return;
+    setAwaitRun(null);
+    setLeaving(true);
+  }, [state?.run_id, awaitRun]);
+
+  // After the 400 ms fade, the landing is gone.
+  useEffect(() => {
+    if (!leaving) return;
+    const t = window.setTimeout(() => {
+      setLanding(false);
+      setLeaving(false);
+    }, FADE_MS);
+    return () => window.clearTimeout(t);
+  }, [leaving]);
+
+  async function start() {
+    const run = await freshRun();
+    if (run) setAwaitRun(run);
+  }
+
+  /** Reset for the next judge: a fresh Protected run, client state cleared (cached routes stay), back to the landing. */
+  async function reset() {
+    await freshRun();
+    setSelectedId(null);
+    setLiveKey((k) => k + 1);
+    setLanding(true);
+    setLeaving(false);
+  }
 
   if (!state) {
     return (
@@ -35,25 +90,19 @@ export function App() {
     onResolve: async (assignments: Record<string, string | null>) => void (await postResolve(assignments)),
   };
 
-  // Start demo: a fresh run of the scripted scenario in Protected (POST /mode resets to t0), then the panels.
-  async function start() {
-    try {
-      await postMode("protected");
-    } catch (err) {
-      toast(`Could not start a fresh run: ${err instanceof Error ? err.message : String(err)}`, "error");
-    }
-    setPage("live");
-  }
-
   return (
-    <LivePage
-      state={state}
-      stale={error !== null}
-      selectedId={selectedId}
-      onSelect={setSelectedId}
-      intro={page === "intro"}
-      onStart={() => void start()}
-      {...handlers}
-    />
+    <>
+      <LivePage
+        key={liveKey}
+        state={state}
+        stale={error !== null}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        intro={landing && !leaving}
+        onReset={() => void reset()}
+        {...handlers}
+      />
+      {landing && <Landing leaving={leaving} starting={awaitRun !== null} onStart={() => void start()} />}
+    </>
   );
 }

@@ -32,7 +32,7 @@ export function useWorldState(): WorldStateResult {
       const fresh = newEvents(seen.current.events, body.events ?? []);
       seen.current.events = body.events ?? [];
       fresh.forEach((e) => onEvent(e, { runId: body.run_id, backfill: first }));
-      rememberRun(body.run_id, body.compromised ?? []);
+      rememberRun(body);
     }
 
     async function poll() {
