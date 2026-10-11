@@ -458,11 +458,3 @@ export function checkSentence(card: CheckCard): string {
     : "";
   return `${joinAnd(card.verifiers)} checked ${card.vehicle}'s ${joinAnd(card.whats)}: FALSE.${trust}`;
 }
-
-/** Incidents with a decision still open (call received, no outcome yet), oldest first. */
-export function negotiatingIncidents(story: StoryItem[]): string[] {
-  return story
-    .filter((x): x is DecisionCard => x.kind === "decision" && x.status === "negotiating")
-    .sort((a, b) => a.seq - b.seq)
-    .map((x) => x.incident);
-}
