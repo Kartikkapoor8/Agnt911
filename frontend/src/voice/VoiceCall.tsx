@@ -1,10 +1,11 @@
 // Talk to the ElevenLabs dispatcher agent over WebRTC. The agent fills in the call through three client tools
 // (tools.ts); the fleet then negotiates it like any other call and the map draws it from /state.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
-import { Phone, PhoneOff } from "lucide-react";
+import { Phone, PhoneOff, Timer } from "lucide-react";
 import { toast } from "../toast";
+import { createLatencyTracker, VOICE_DEBUG, type LatencyTracker, type Timing } from "./latency";
 import { MOCK_VOICE, useMockConversation } from "./mock";
 import { dispatcherTools, newCallSession } from "./tools";
 import "./voice.css";
@@ -15,7 +16,7 @@ const useSession = MOCK_VOICE ? useMockConversation : useConversation; // fixed 
 
 type Phase = "idle" | "connecting" | "live" | "ended" | "error";
 interface Line {
-  role: "user" | "agent";
+  role: "user" | "agent" | "timing";
   text: string;
 }
 
@@ -43,6 +44,10 @@ function CallPanel() {
   const session = useRef(newCallSession());
   const active = useRef(false);
   const timers = useRef<number[]>([]);
+  const latency = useRef<LatencyTracker | null>(null);
+  const showTiming = (t: Timing) => {
+    if (VOICE_DEBUG) setLines((l) => [...l, { role: "timing" as const, text: `${t.name}: ${Math.round(t.ms)} ms${t.detail ? ` · ${t.detail}` : ""}` }].slice(-40));
+  };
 
   const stopTimers = () => {
     timers.current.forEach((t) => window.clearTimeout(t));
@@ -56,7 +61,7 @@ function CallPanel() {
   };
 
   const clientTools = useMemo(
-    () => dispatcherTools(() => session.current, (message) => toast(`Voice dispatcher: ${message}`, "error")),
+    () => dispatcherTools(() => session.current, (message) => toast(`Voice dispatcher: ${message}`, "error"), () => latency.current?.tool),
     [],
   );
   const conversation = useSession({
@@ -68,6 +73,18 @@ function CallPanel() {
   });
   const convo = useRef(conversation);
   convo.current = conversation;
+
+  // While live, sample mic and agent levels every 20 ms for the end-of-speech -> agent-audio timing.
+  useEffect(() => {
+    if (phase !== "live") return;
+    const c = convo.current as Partial<{ getInputVolume: () => number; getOutputVolume: () => number }>;
+    if (typeof c.getInputVolume !== "function" || typeof c.getOutputVolume !== "function") return; // the mock has none
+    const t = window.setInterval(() => {
+      const cur = convo.current as unknown as { getInputVolume: () => number; getOutputVolume: () => number };
+      latency.current?.levels(cur.getInputVolume(), cur.getOutputVolume());
+    }, 20);
+    return () => window.clearInterval(t);
+  }, [phase]);
 
   function hangUp() {
     try {
@@ -89,6 +106,7 @@ function CallPanel() {
     if (active.current) return;
     active.current = true;
     session.current = newCallSession();
+    latency.current = createLatencyTracker(showTiming);
     setLines([]);
     setIncident(null);
     setLeft(COUNTDOWN_S);
@@ -149,7 +167,7 @@ function CallPanel() {
           {lines.length === 0 && <p className="voice-line wait">{phase === "connecting" ? "Ringing…" : "Listening…"}</p>}
           {lines.map((l, i) => (
             <p key={i} className={`voice-line ${l.role}`}>
-              <b>{l.role === "agent" ? "Dispatcher" : "Caller"}</b> {l.text}
+              <b>{l.role === "agent" ? "Dispatcher" : l.role === "timing" ? <Timer size={12} aria-label="timing" /> : "Caller"}</b> {l.text}
             </p>
           ))}
         </div>

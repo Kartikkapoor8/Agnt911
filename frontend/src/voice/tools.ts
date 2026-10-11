@@ -131,20 +131,27 @@ export async function requestDispatch(s: CallSession) {
   return { status: "negotiating", incident_id: s.incidentId };
 }
 
+/** Times one tool call: called when the call arrives; call the result when the response is returned. */
+export type ToolTimer = (name: string) => (detail?: string) => void;
+
 /** The clientTools object for useConversation. Errors go back to the agent as {error} and to onError. */
-export function dispatcherTools(session: () => CallSession, onError: (message: string) => void) {
-  const wrap = <A,>(fn: (s: CallSession, args: A) => Promise<unknown>) => async (args: A) => {
+export function dispatcherTools(session: () => CallSession, onError: (message: string) => void, time?: () => ToolTimer | undefined) {
+  const wrap = <A,>(name: string, fn: (s: CallSession, args: A) => Promise<unknown>) => async (args: A) => {
+    const done = time?.()?.(name);
     try {
-      return JSON.stringify(await fn(session(), args));
+      const reply = JSON.stringify(await fn(session(), args));
+      done?.();
+      return reply;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      done?.("error");
       onError(message);
       return JSON.stringify({ error: message });
     }
   };
   return {
-    update_incident: wrap<UpdateIncidentArgs>(updateIncident),
-    request_demo_dispatch: wrap<Record<string, never>>((s) => requestDispatch(s)),
-    get_dispatch_status: wrap<Record<string, never>>((s) => dispatchStatus(s)),
+    update_incident: wrap<UpdateIncidentArgs>("update_incident", updateIncident),
+    request_demo_dispatch: wrap<Record<string, never>>("request_demo_dispatch", (s) => requestDispatch(s)),
+    get_dispatch_status: wrap<Record<string, never>>("get_dispatch_status", (s) => dispatchStatus(s)),
   };
 }

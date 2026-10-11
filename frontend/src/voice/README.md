@@ -19,6 +19,27 @@ The backend side is `GET /voice/token` (a WebRTC conversation token) and `POST /
 | `ELEVENLABS_API_KEY` | `backend/.env` | Used only by `GET /voice/token`; never sent to the browser |
 | `ELEVENLABS_AGENT_ID` | `backend/.env` | `agent_1101m4m2jypsfw6scn9fskzn47je` |
 | `VITE_MAPBOX_TOKEN` | `frontend/.env` | The existing map token, also used for geocoding. Without it, every call lands on `DEFAULT_CALL_LOCATION` |
+| `VITE_VOICE_DEBUG` | `frontend/.env` or the shell that starts Vite | `true` shows each latency measurement in the call's transcript card |
+
+## Latency
+
+`latency.ts` measures two things in the browser. Each measurement is logged as `[voice-latency] …` and pushed to `window.__agnt911VoiceTimings`.
+
+- **turn**: from the caller's end of speech to the agent's first audio. The conversation's input and output levels (`getInputVolume` / `getOutputVolume`) are sampled every 20 ms. End of speech is the last loud mic sample before 300 ms of quiet. Over WebRTC no VAD scores arrive, and the caller's transcript lands just before the agent speaks, so neither can mark end of speech.
+- **tool**: from a client tool call arriving to its response returning (the handler's own time; the hops to and from ElevenLabs aren't visible here).
+
+Measured 2026-10-10. The real call used Chrome's fake mic playing a synthesized caller to the live agent; the tool times come from the real handlers run against the dev backend.
+
+| what | ms |
+|---|---|
+| turn 1, end of speech → first agent audio | 3,660 |
+| turn 2 | 3,218 |
+| `update_incident`, new location (geocode + POST) | 37–125 |
+| `update_incident`, no new location | 2–4 |
+| `request_demo_dispatch` | 0 |
+| `get_dispatch_status` | 22–28 |
+
+The tools stay under the 300 ms budget, so `update_incident` still awaits its POST before replying. In both measured turns the agent's first audio was a filler ("I'm here…"), so most of the turn time is the agent itself.
 
 ## Tools to add in the ElevenLabs agent dashboard
 

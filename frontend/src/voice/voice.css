@@ -24,3 +24,6 @@
 /* The "called in" badge on a voice call's map pin (badge.ts). */
 .voice-badge { position: absolute; left: 50%; bottom: calc(100% + 4px); transform: translateX(-50%); padding: 0 6px; border-radius: 999px; background: var(--green); color: var(--bg); font: 600 10px/16px var(--font-ui); white-space: nowrap; pointer-events: none; animation: voice-badge-in 400ms var(--ease); }
 @keyframes voice-badge-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* VITE_VOICE_DEBUG=true: latency lines in the transcript */
+.voice-line.timing { color: var(--text-3); font: 400 var(--fs-xs)/16px var(--font-mono); }
