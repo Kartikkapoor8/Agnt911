@@ -100,7 +100,15 @@ export function App() {
         onReset={() => void reset()}
         {...handlers}
       />
-      {landing && <Landing leaving={leaving} starting={awaitRun !== null} onStart={() => void start()} />}
+      {landing && (
+        <Landing
+          state={state}
+          leaving={leaving}
+          starting={awaitRun !== null}
+          onStart={() => void start()}
+          onRestart={() => handlers.onSetMode("protected")}
+        />
+      )}
     </>
   );
 }

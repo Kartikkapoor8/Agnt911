@@ -31,18 +31,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .chip:hover { color: var(--text); border-color: var(--line-strong); }
 .chip.on, .chip[aria-checked="true"], .chip[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 
-/* ---------- Landing: a looping clip of a catch, dimmed and blurred, and one button ---------- */
-.landing { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: var(--bg); opacity: 1; transition: opacity var(--t-map) var(--ease); }
+/* ---------- Landing: 40% card, 60% static map; fades out into the live map ---------- */
+.landing { position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: 2fr 3fr; background: var(--bg); opacity: 1; transition: opacity var(--t-map) var(--ease); }
 .landing.leaving { opacity: 0; pointer-events: none; }
-.landing-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.landing-veil { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
-.landing-center { position: relative; display: flex; flex-direction: column; align-items: center; gap: var(--s2); text-align: center; padding: var(--s3); }
-.landing-wordmark { font-size: 56px; line-height: 64px; letter-spacing: -0.03em; }
-.landing-line { margin: 0 0 var(--s2); font: 400 var(--fs-xl)/28px var(--font-ui); color: var(--text); max-width: 44rem; }
-.start-demo { display: inline-flex; align-items: center; gap: var(--s1); height: 56px; padding: 0 var(--s4); border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: #fff; font: 600 var(--fs-lg)/1 var(--font-ui); cursor: pointer; transition: transform var(--t-ui) var(--ease), background var(--t-ui) var(--ease), opacity var(--t-ui) var(--ease); }
+.landing-left { position: relative; z-index: 1; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; min-width: 0; padding: var(--s5) var(--s4) var(--s5) clamp(40px, 7vw, 112px); background: var(--bg-raised); border-right: 1px solid var(--line); overflow-y: auto; }
+.landing-right { position: relative; min-width: 0; min-height: 0; background: var(--bg); }
+.landing-wordmark { margin: 0; font: 700 clamp(56px, 6vw, 88px)/1.05 var(--font-ui); letter-spacing: -0.03em; color: var(--text); }
+.landing-wordmark span { color: var(--accent); }
+.landing-tagline { margin: 20px 0 0; font: 500 clamp(20px, 1.8vw, 26px)/1.35 var(--font-ui); color: var(--text-2); }
+.landing-desc { margin: 16px 0 0; max-width: 480px; font: 400 17px/1.6 var(--font-ui); color: var(--text-2); }
+.landing-label { margin-top: 40px; font: 500 13px/1.4 var(--font-ui); color: var(--text-2); }
+.landing-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: var(--s1) 0 0; padding: 0; list-style: none; max-width: 480px; }
+.landing-chip { display: inline-flex; align-items: center; justify-content: center; gap: var(--s1); width: 76px; height: 36px; border: 1px solid var(--line-strong); border-radius: var(--radius-xs); color: var(--text); }
+.landing-chip .glyph { color: var(--text-2); flex: none; }
+.landing-chip b { font: 600 var(--fs-md)/1 var(--font-mono); }
+.start-demo { margin-top: 24px; height: 48px; padding: 0 28px; border: 0; border-radius: var(--radius-sm); background: var(--accent); color: #fff; font: 600 16px/1 var(--font-ui); cursor: pointer; transition: background var(--t-ui) var(--ease), transform var(--t-ui) var(--ease), opacity var(--t-ui) var(--ease); }
 .start-demo:hover:not(:disabled) { background: var(--accent-bright); }
 .start-demo:active:not(:disabled) { transform: scale(0.98); }
 .start-demo:disabled { opacity: 0.7; cursor: wait; }
+
+/* Static landing map: every vehicle in one neutral style, calls in amber; no trust colours, rings or negotiation arcs */
+.landing-map .vm-trust, .landing-map .vm-ring, .landing-map .vm-skull, .landing-map .vm-note, .landing-map .ip-label { display: none !important; }
+.landing-map .vehicle-marker .vm-dot, .landing-map .vehicle-marker.untrusted .vm-dot { background: var(--text); color: var(--bg); box-shadow: none; outline: 0; animation: none; }
+.landing-map .vehicle-marker .vm-id, .landing-map .vehicle-marker.untrusted .vm-id { color: var(--text); }
+.landing-map .incident-pin, .landing-map .incident-pin[class*="sev-"] { --sev: var(--amber); }
 
 .notice { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s1); padding: var(--s3); text-align: center; }
 .notice h2 { margin: 0; font: 600 var(--fs-xl)/28px var(--font-ui); color: var(--red); }

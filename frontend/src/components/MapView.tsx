@@ -12,6 +12,7 @@ import type { Incident, IncidentType, Location, TypedEvent, Vehicle } from "../t
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 const STYLE = "mapbox://styles/mapbox/dark-v11";
 const DOWNTOWN_SAN_JOSE: [number, number] = [-121.8811, 37.3352]; // lng, lat
+const ROAD_LABEL_OPACITY = 0.35; // static landing map: quiet road names, neighbourhood names untouched
 const GLIDE_MS = 500; // one poll interval, so a marker arrives just as the next position lands
 const LINES = "assignment-lines"; // GeoJSON source and layer: the road still ahead of each vehicle on its way to a call
 const INCIDENT_TYPES: IncidentType[] = ["medical", "fire", "crash", "hazard", "shooting"];
@@ -27,6 +28,12 @@ interface Tracked {
   start: number;
   trip: Trip | null; // on its way to a call: drawn along the road (motion.ts)
   untrusted: boolean;
+}
+
+/** The landing page's fixed camera. Passing it makes the map static, neutral and without the choreography. */
+export interface StaticCamera {
+  center: [number, number]; // lng, lat
+  zoom: number;
 }
 
 /** What the pointer is over. MapView positions the popover; the caller renders what goes in it. */
@@ -115,6 +122,7 @@ interface Props {
   pendingIncidents?: PendingIncident[]; // dropped calls not yet confirmed by a poll
   placing?: IncidentType | null; // click-to-place: the next map click drops this type
   activeIncidents?: string[]; // calls being decided right now: their pins show the label without hover
+  staticCamera?: StaticCamera; // landing page: one fixed view, no interaction, no controls, no negotiation arcs
 }
 
 /** Show the Mapbox map with a marker per vehicle (driven along real roads), a pin per incident, and the route still ahead of each vehicle. */
@@ -135,8 +143,10 @@ export function MapView({
   pendingIncidents = [],
   placing = null,
   activeIncidents = [],
+  staticCamera,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
+  const fixed = useRef(staticCamera); // read once, when the map is created
   const map = useRef<mapboxgl.Map | null>(null);
   const vehicleMarkers = useRef(new Map<string, Tracked>());
   const incidentMarkers = useRef(new Map<string, { marker: mapboxgl.Marker; el: HTMLDivElement }>());
@@ -182,8 +192,17 @@ export function MapView({
   useEffect(() => {
     if (!TOKEN || !container.current) return;
     mapboxgl.accessToken = TOKEN;
-    const m = new mapboxgl.Map({ container: container.current, style: STYLE, center: DOWNTOWN_SAN_JOSE, zoom: 13.3 });
-    m.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
+    const cam = fixed.current;
+    const m = new mapboxgl.Map({
+      container: container.current,
+      style: STYLE,
+      center: cam?.center ?? DOWNTOWN_SAN_JOSE,
+      zoom: cam?.zoom ?? 13.3,
+      pitch: 0,
+      bearing: 0,
+      interactive: !cam, // static landing map: no drag, scroll, double-click, touch or keyboard
+    });
+    if (!cam) m.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
     map.current = m;
     if (import.meta.env.DEV) (window as unknown as { __agnt911Map?: mapboxgl.Map }).__agnt911Map = m; // for the Playwright checks
     prefetchScenario();
@@ -198,7 +217,7 @@ export function MapView({
         id: LINES,
         type: "line",
         source: LINES,
-        layout: { "line-cap": "round" },
+        layout: { "line-cap": "round", visibility: cam ? "none" : "visible" },
         paint: {
           "line-color": ["case", ["get", "untrusted"], cssVar("--route-untrusted", "#e5484d"), cssVar("--route", "#d0d4dc")],
           "line-width": 1.6,
@@ -207,6 +226,13 @@ export function MapView({
       });
       linesReady.current = true;
       linesDirty.current = true;
+      if (cam) {
+        // Quiet the road names so the vehicles read first; neighbourhood and district labels keep full strength.
+        for (const layer of m.getStyle()?.layers ?? []) {
+          if (layer.type === "symbol" && /^road/.test(layer.id) && /label/.test(layer.id)) m.setPaintProperty(layer.id, "text-opacity", ROAD_LABEL_OPACITY);
+        }
+        return;
+      }
       choreo.current = createChoreo(m, {
         vehicleAt: (id) => {
           const at = vehicleMarkers.current.get(id)?.marker.getLngLat();
@@ -327,7 +353,7 @@ export function MapView({
   // Fall back to the scenario's map_center if there is nothing to frame.
   useEffect(() => {
     const m = map.current;
-    if (!m || centered.current) return;
+    if (!m || centered.current || fixed.current) return; // the static landing map never re-frames
     const points = [...Object.values(vehicles), ...Object.values(incidents)].map((x) => x.location);
     if (points.length > 1) {
       m.fitBounds(boundsOf(points), { padding: fitPadding, maxZoom: 14.5, duration: 0 });
@@ -551,7 +577,7 @@ export function MapView({
   }
   const content = hover && renderPopover ? renderPopover(hover) : null;
   return (
-    <div className={`map-wrap${negotiating ? " negotiating" : ""}${placing ? " placing" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
+    <div className={`map-wrap${negotiating ? " negotiating" : ""}${placing ? " placing" : ""}${staticCamera ? " landing-map" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
       <div ref={container} className="map" />
       <div className="map-dim" aria-hidden />
       {content && (
