@@ -7,7 +7,6 @@ import { Landing } from "./components/Landing";
 import { LivePage } from "./components/LivePage";
 
 const FADE_MS = 400;
-let resetOnLoad = false; // module flag: StrictMode runs the mount effect twice, the reset should happen once
 
 /** A fresh run in Protected: every vehicle at trust 1.0, nobody compromised, no callers. Returns its run id. */
 async function freshRun(): Promise<string | null> {
@@ -23,18 +22,16 @@ async function freshRun(): Promise<string | null> {
 /** Top-level app: the landing screen over the live page, the polled state, the selected vehicle, and reset. */
 export function App() {
   const { state, error } = useWorldState();
-  const [landing, setLanding] = useState(true);
+  const [landing, setLanding] = useState<boolean | null>(null); // null until the first poll decides
   const [leaving, setLeaving] = useState(false); // landing fading out
   const [awaitRun, setAwaitRun] = useState<string | null>(null); // Start demo waits for its fresh run to show up
   const [liveKey, setLiveKey] = useState(0); // remounting the live page clears its client state
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // A page refresh is a reset for the next judge.
+  // A page load never resets the run: a run already past t0 opens straight on the live map, a run at t0 on the landing.
   useEffect(() => {
-    if (resetOnLoad) return;
-    resetOnLoad = true;
-    void freshRun();
-  }, []);
+    if (landing === null && state) setLanding(state.tick === 0);
+  }, [state, landing]);
 
   // The fresh run is on screen (t0): fade the landing out into the live map.
   useEffect(() => {
@@ -58,7 +55,8 @@ export function App() {
     if (run) setAwaitRun(run);
   }
 
-  /** Reset for the next judge: a fresh Protected run, client state cleared (cached routes stay), back to the landing. */
+  /** Reset for the next judge (the status-strip button or R, after the inline confirm): a fresh Protected run,
+   *  client state cleared (cached routes stay), back to the landing. Only this and Start demo start a fresh run. */
   async function reset() {
     await freshRun();
     setSelectedId(null);
@@ -67,7 +65,7 @@ export function App() {
     setLeaving(false);
   }
 
-  if (!state) {
+  if (!state || landing === null) {
     return (
       <div className="notice">
         <div className="wordmark">Agnt<span>911</span></div>
