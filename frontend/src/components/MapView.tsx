@@ -144,6 +144,22 @@ export function MapView({
   onSelect.current = onSelectVehicle; // marker click handlers are created once, so read the latest callback
   const incidentsNow = useRef(incidents);
   incidentsNow.current = incidents;
+  const vehiclesNow = useRef(vehicles);
+  vehiclesNow.current = vehicles;
+
+  /** Untrusted outline and trust ring, as the choreography wants them shown right now. */
+  function paintTrust(t: Tracked, v: Vehicle) {
+    const untrusted = choreo.current?.untrustedShown(v.id, v.untrusted) ?? v.untrusted;
+    const trust = choreo.current?.trustShown(v.id, v.trust) ?? v.trust;
+    t.el.classList.toggle("untrusted", untrusted);
+    t.untrusted = untrusted;
+    const arc = t.el.querySelector(".vm-trust-arc") as SVGCircleElement | null;
+    if (arc) {
+      arc.style.strokeDasharray = `${Math.max(0, Math.min(1, trust)) * 100} 100`;
+      arc.style.stroke = trustColor(trust);
+    }
+    t.el.dataset.trust = trust.toFixed(2);
+  }
   const pendingMarkers = useRef(new Map<string, mapboxgl.Marker>());
   const clock = useRef({ tick: -1, at: 0, tps: 1 }); // last tick seen, when (ms), and ticks per second while running
   const negotiatingNow = useRef(negotiating);
@@ -184,8 +200,8 @@ export function MapView({
         layout: { "line-cap": "round" },
         paint: {
           "line-color": ["case", ["get", "untrusted"], cssVar("--route-untrusted", "#e5484d"), cssVar("--route", "#d0d4dc")],
-          "line-width": 1.4,
-          "line-opacity": 0.75,
+          "line-width": 1.6,
+          "line-opacity": ["get", "opacity"],
         },
       });
       linesReady.current = true;
@@ -200,6 +216,26 @@ export function MapView({
           return inc ? [inc.location.lng, inc.location.lat] : null;
         },
         color: cssVar,
+        // One-shot marker animations play on the same timeline, so the flash lands with its check line.
+        play: (e) => {
+          const a = animationFor(e);
+          if (!a) return;
+          const [kind, id] = a.key.split(":");
+          const el = kind === "vehicle" ? vehicleMarkers.current.get(id)?.el : incidentMarkers.current.get(id)?.el;
+          if (el) flash(el, a.cls);
+          else pending.current.set(a.key, [...(pending.current.get(a.key) ?? []), a.cls]);
+        },
+        vehicleChanged: (id) => {
+          const t = vehicleMarkers.current.get(id);
+          const v = vehiclesNow.current[id];
+          if (t && v) paintTrust(t, v);
+        },
+        note: (id, text, ms) => {
+          const el = vehicleMarkers.current.get(id)?.el.querySelector(".vm-note") as HTMLElement | null;
+          if (!el) return;
+          el.textContent = text;
+          flash(el, "show", ms);
+        },
       });
     });
 
@@ -228,15 +264,17 @@ export function MapView({
       heldBefore = held;
       if (linesReady.current && (moving || linesDirty.current)) {
         linesDirty.current = false;
-        const features = [...vehicleMarkers.current].flatMap(([id, t]) =>
-          t.trip && !held.has(id)
+        const features = [...vehicleMarkers.current].flatMap(([id, t]) => {
+          const opacity = t.trip && !held.has(id) ? 0.85 * (choreo.current?.routeOpacity(id, t.untrusted, now) ?? 1) : 0;
+          if (opacity < 1 && opacity > 0) linesDirty.current = true; // still dissolving
+          return t.trip && opacity > 0
             ? [{
                 type: "Feature" as const,
-                properties: { untrusted: t.untrusted, vehicle: id, road: t.trip.path.road },
+                properties: { untrusted: t.untrusted, vehicle: id, road: t.trip.path.road, opacity },
                 geometry: { type: "LineString" as const, coordinates: remaining(t.trip.path, t.trip.pShown) },
               }]
-            : [],
-        );
+            : [];
+        });
         (m.getSource(LINES) as mapboxgl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
       }
       const h = hoverNow.current;
@@ -274,19 +312,8 @@ export function MapView({
   useEffect(() => onLiveEvent((e) => choreo.current?.push(e)), []);
   useEffect(() => onRunReset(() => choreo.current?.clear()), []);
 
-  // Live events animate their marker once. A pin for a brand-new call is created after this runs, so queue it.
-  useEffect(
-    () =>
-      onLiveEvent((e) => {
-        const a = animationFor(e);
-        if (!a) return;
-        const [kind, id] = a.key.split(":");
-        const el = kind === "vehicle" ? vehicleMarkers.current.get(id)?.el : incidentMarkers.current.get(id)?.el;
-        if (el) flash(el, a.cls);
-        else pending.current.set(a.key, [...(pending.current.get(a.key) ?? []), a.cls]);
-      }),
-    [],
-  );
+  // (One-shot marker animations play from the choreographer's timeline; see the play hook above.
+  // A pin for a brand-new call may not exist yet when its event plays, so it is queued in `pending`.)
 
   function runPending(key: string, el: HTMLElement) {
     const queued = pending.current.get(key);
@@ -342,7 +369,8 @@ export function MapView({
           `<svg class="vm-trust" viewBox="0 0 44 44" aria-hidden="true"><circle class="vm-trust-track" cx="22" cy="22" r="20" pathLength="100"/>` +
           `<circle class="vm-trust-arc" cx="22" cy="22" r="20" pathLength="100"/></svg>` +
           `<span class="vm-ring"></span><span class="vm-dot">${glyphSvg(v.type, 20)}</span>` +
-          `<span class="vm-id">${v.id}</span><span class="vm-skull" title="Hacked (judge view only)">${glyphSvg("skull", 20)}</span>`;
+          `<span class="vm-id">${v.id}</span><span class="vm-skull" title="Hacked (judge view only)">${glyphSvg("skull", 20)}</span>` +
+          `<span class="vm-note"></span>`;
         wrap.addEventListener("click", (e) => {
           e.stopPropagation();
           onSelect.current?.(v.id);
@@ -387,18 +415,12 @@ export function MapView({
         t.to = to;
         t.start = now;
       }
-      t.untrusted = v.untrusted;
+
       const row = v.status === "on_scene" && v.target_incident ? onScene.get(v.target_incident) ?? [] : [];
       const k = row.indexOf(v.id);
       t.marker.setOffset(k < 0 ? [0, 0] : [Math.round((k - (row.length - 1) / 2) * SCENE_SPACING_PX), -SCENE_LIFT_PX]);
-      t.el.classList.toggle("untrusted", v.untrusted);
       // Trust ring: the arc is the trust left, its colour slides blue -> amber -> red (CSS transitions it).
-      const arc = t.el.querySelector(".vm-trust-arc") as SVGCircleElement | null;
-      if (arc) {
-        arc.style.strokeDasharray = `${Math.max(0, Math.min(1, v.trust)) * 100} 100`;
-        arc.style.stroke = trustColor(v.trust);
-      }
-      t.el.dataset.trust = v.trust.toFixed(2);
+      paintTrust(t, v);
       t.el.classList.toggle("compromised", compromised.includes(v.id));
       t.el.classList.toggle("selected", v.id === selectedId);
       t.el.classList.toggle("selectable", Boolean(onSelect.current));
@@ -453,7 +475,7 @@ export function MapView({
         const wrapper = document.createElement("div");
         wrapper.className = "incident-wrap";
         const el = wrapper.appendChild(document.createElement("div"));
-        el.innerHTML = `<span class="ip-ring"></span><span class="ip-sev"></span><span class="ip-label"><b></b><span></span></span>`;
+        el.innerHTML = `<span class="ip-ring"></span><span class="ip-sev"></span><span class="ip-label"><b></b><span></span></span><span class="ip-flag">false report</span>`;
         wrapper.addEventListener("mouseenter", () => setHover({ kind: "incident", id: inc.id }));
         wrapper.addEventListener("mouseleave", () => setHover((h) => (h?.kind === "incident" && h.id === inc.id ? null : h)));
         // Mapbox needs a position before addTo, or it throws.

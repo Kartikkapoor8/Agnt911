@@ -425,8 +425,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .result-mark { display: inline-flex; align-items: center; gap: 2px; }
 
 /* Negotiation arcs: ETA labels at each arc's midpoint (choreo.ts) */
-.arc-eta { padding: 0 var(--s-half); border-radius: 4px; background: var(--panel-solid); border: 1px solid var(--line); font: 600 10px/14px var(--font-mono); color: var(--accent-bright); white-space: nowrap; pointer-events: none; transition: opacity var(--t-ui) var(--ease); }
+.arc-eta { z-index: 3; padding: 0 var(--s-half); border-radius: 4px; background: var(--panel-solid); border: 1px solid var(--line); font: 600 10px/14px var(--font-mono); color: var(--accent-bright); white-space: nowrap; pointer-events: none; transition: opacity var(--t-ui) var(--ease); }
 .arc-eta:empty { display: none; }
 .arc-eta[data-state="lead"], .arc-eta[data-state="won"] { color: #fff; border-color: var(--accent); background: var(--accent); }
 .arc-eta[data-state="won_amber"] { color: #1a1205; border-color: var(--amber); background: var(--amber); }
 .arc-eta[data-state="lost"] { color: var(--text-3); }
+
+/* Catch sequence (choreo.ts): the check label, the note under a marker, the false-report flag */
+.check-label { z-index: 6; padding: 2px var(--s1); border-radius: var(--radius-xs); background: var(--red); color: #fff; font: 700 var(--fs-xs)/16px var(--font-mono); white-space: nowrap; pointer-events: none; }
+.vm-note { position: absolute; left: 50%; top: calc(100% + 22px); transform: translateX(-50%); padding: 0 var(--s-half); border-radius: 4px; background: var(--red); color: #fff; font: 600 10px/14px var(--font-ui); white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity var(--t-ui) var(--ease); }
+.vm-note.show { opacity: 1; }
+.ip-flag { display: none; position: absolute; left: 50%; top: calc(100% + 2px); transform: translateX(-50%); font: 600 10px/14px var(--font-ui); color: var(--grey); white-space: nowrap; pointer-events: none; }
+.incident-pin.false-report .ip-flag { display: block; }
+.incident-pin.false-report.status-resolved { opacity: 0.6; transform: none; }

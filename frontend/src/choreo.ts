@@ -8,6 +8,13 @@
 //   plan_committed winner arcs turn solid blue (amber for plan_no_consensus), loser arcs fade over 400 ms,
 //                  then the winner arc fades and the route line takes over
 // Bids on calls that no plan in the same batch decided are dropped (vehicles bid on every open call).
+//
+// The catch sequence plays on the same timeline:
+//   claim_verified (contradicted)  a red line flashes from the checker to the claimed spot, with
+//                                  "P1 checked A1: FALSE" at its midpoint for 2 s
+//   trust_changed                  the liar's trust ring animates down (held at the old value until now)
+//   vehicle_untrusted              its outline turns red, its route line dissolves, and "removed from voting"
+//                                  shows under the marker for 3 s (held trusted-looking until now)
 
 import mapboxgl from "mapbox-gl";
 import type { TypedEvent } from "./types";
@@ -39,7 +46,16 @@ const GAP: Partial<Record<TypedEvent["type"], number>> = {
   plan_committed: 500,
   plan_no_consensus: 500,
   escalated_to_human: 500,
+  claim_verified: 0, // a failed check gets CATCH_GAP instead (see gapFor)
+  trust_changed: 700,
+  vehicle_untrusted: 700,
+  incident_discredited: 300,
 };
+const CATCH_GAP = 600;
+const CHECK_MS = 2000;
+const DISSOLVE_MS = 400;
+const NOTE_MS = 3000;
+const CHECKS = "check-lines";
 const OPACITY: Record<ArcState, number> = { bid: 0.4, lead: 0.9, won: 1, won_amber: 1, lost: 0.4 };
 const FADE_MS = 400;
 const WINNER_HOLD_MS = 1400;
@@ -61,6 +77,14 @@ function curve(a: LngLat, b: LngLat, segments = 24): LngLat[] {
   return pts;
 }
 
+interface CheckFlash {
+  checker: string;
+  liar: string;
+  call: string | null; // the claimed spot is the call it named, else where the liar really is
+  start: number;
+  label: mapboxgl.Marker;
+}
+
 export interface Choreo {
   /** Queue one live event (call for every event of a poll, in order). */
   push(event: TypedEvent): void;
@@ -68,6 +92,12 @@ export interface Choreo {
   frame(now: number): void;
   /** Vehicles whose negotiation arcs are still on screen: hide their route line until the arc hands over. */
   holding(): Set<string>;
+  /** The trust to draw for a vehicle: held at the old value until its trust_changed plays. */
+  trustShown(vehicle: string, actual: number): number;
+  /** Whether to draw a vehicle as untrusted: held off until its vehicle_untrusted plays. */
+  untrustedShown(vehicle: string, actual: boolean): boolean;
+  /** Route line opacity for a vehicle: dissolves over 400 ms once it is removed from voting. */
+  routeOpacity(vehicle: string, untrusted: boolean, now: number): number;
   /** Remove everything (map teardown or a new run). */
   clear(): void;
 }
@@ -78,7 +108,10 @@ export interface ChoreoHooks {
   color: (token: string, fallback: string) => string;
   /** Other one-shot effects (the catch sequence) get their turn on the same timeline. */
   play?: (event: TypedEvent, now: number) => void;
-  gap?: (event: TypedEvent) => number | undefined;
+  /** A held trust or untrusted value changed: redraw that vehicle's ring and outline now. */
+  vehicleChanged?: (vehicle: string) => void;
+  /** Show a short note under a vehicle marker for ms. */
+  note?: (vehicle: string, text: string, ms: number) => void;
 }
 
 /** Build the choreographer on a loaded map. */
@@ -87,6 +120,10 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
   let queue: { at: number; event: TypedEvent }[] = [];
   let playhead = 0;
   let batch: TypedEvent[] = [];
+  const trustHold = new Map<string, number>(); // vehicle -> trust to draw until its next trust_changed plays
+  const untrustHold = new Set<string>(); // vehicles to keep drawing trusted until vehicle_untrusted plays
+  const dissolving = new Map<string, number>(); // vehicle -> when its route started dissolving
+  let flashes: CheckFlash[] = [];
 
   map.addSource(SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   const accent = hooks.color("--accent", "#3b82ff");
@@ -107,6 +144,11 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
     id: `${SOURCE}-solid`, type: "line", source: SOURCE, filter: ["get", "solid"],
     layout: { "line-cap": "round" },
     paint: { "line-color": color, "line-width": 3, "line-opacity": ["get", "opacity"] },
+  });
+  map.addSource(CHECKS, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: CHECKS, type: "line", source: CHECKS, layout: { "line-cap": "round" },
+    paint: { "line-color": hooks.color("--red", "#ff4d5e"), "line-width": 2.5, "line-opacity": ["get", "opacity"] },
   });
 
   function negotiation(incident: string): Negotiation {
@@ -183,6 +225,38 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
         n.decidedAt = now;
         break;
       }
+      case "claim_verified": {
+        const verifier = typeof e.data.verifier === "string" ? e.data.verifier : null;
+        if (e.data.result !== "contradicted" || !verifier || !e.vehicle) break;
+        const el = document.createElement("div");
+        el.className = "check-label";
+        el.textContent = `${verifier} checked ${e.vehicle}: FALSE`;
+        const label = new mapboxgl.Marker({ element: el }).setLngLat(hooks.vehicleAt(verifier) ?? [0, 0]).addTo(map);
+        const call = e.data.subject === "bid" ? null : inc;
+        flashes.push({ checker: verifier, liar: e.vehicle, call, start: now, label });
+        break;
+      }
+      case "trust_changed":
+        if (e.vehicle && typeof e.data.new === "number") {
+          trustHold.set(e.vehicle, e.data.new);
+          if (!queue.some((q) => q.event.type === "trust_changed" && q.event.vehicle === e.vehicle)) trustHold.delete(e.vehicle);
+          hooks.vehicleChanged?.(e.vehicle);
+        }
+        break;
+      case "vehicle_trusted_again":
+        if (e.vehicle) {
+          dissolving.delete(e.vehicle);
+          hooks.vehicleChanged?.(e.vehicle);
+        }
+        break;
+      case "vehicle_untrusted":
+        if (e.vehicle) {
+          untrustHold.delete(e.vehicle);
+          dissolving.set(e.vehicle, now);
+          hooks.vehicleChanged?.(e.vehicle);
+          hooks.note?.(e.vehicle, "removed from voting", NOTE_MS);
+        }
+        break;
       default:
         break;
     }
@@ -200,7 +274,17 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
     playhead = Math.max(playhead, now);
     for (const e of events) {
       if ((e.type === "bid_placed" || e.type === "bid_withdrawn" || e.type === "vote_cast") && !decided.has(e.incident)) continue;
-      playhead += hooks.gap?.(e) ?? GAP[e.type] ?? 0;
+      // Hold what the poll already shows until the event that explains it plays.
+      if (e.type === "trust_changed" && e.vehicle && !trustHold.has(e.vehicle) && typeof e.data.old === "number") {
+        trustHold.set(e.vehicle, e.data.old);
+        hooks.vehicleChanged?.(e.vehicle);
+      }
+      if (e.type === "vehicle_untrusted" && e.vehicle) {
+        untrustHold.add(e.vehicle);
+        hooks.vehicleChanged?.(e.vehicle);
+      }
+      const failed = e.type === "claim_verified" && e.data.result === "contradicted";
+      playhead += failed ? CATCH_GAP : GAP[e.type] ?? 0;
       queue.push({ at: playhead, event: e });
     }
   }
@@ -233,6 +317,29 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
       if (n.arcs.size === 0 && n.decidedAt !== null) negotiations.delete(iid);
     }
     (map.getSource(SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+
+    // Check flashes: up to full red fast, hold, then fade out by CHECK_MS; the label goes with it.
+    const checks: typeof features = [];
+    flashes = flashes.filter((f) => {
+      const age = now - f.start;
+      if (age > CHECK_MS) {
+        f.label.remove();
+        return false;
+      }
+      // checker -> the spot it claimed -> where the liar really is: the second leg is the lie
+      const checker = hooks.vehicleAt(f.checker);
+      const liar = hooks.vehicleAt(f.liar);
+      const claimed = (f.call && hooks.callAt(f.call)) || liar;
+      if (!checker || !claimed || !liar) return true;
+      const opacity = age < 150 ? age / 150 : age < 700 ? 1 : 1 - (age - 700) / (CHECK_MS - 700);
+      checks.push({ type: "Feature", properties: { opacity }, geometry: { type: "LineString", coordinates: [checker, claimed, liar] } });
+      const span = (a: LngLat, b: LngLat) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+      const [a, b] = span(claimed, liar) > span(checker, claimed) ? [claimed, liar] : [checker, claimed];
+      f.label.setLngLat([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      f.label.getElement().style.opacity = String(Math.min(1, opacity * 1.5));
+      return true;
+    });
+    (map.getSource(CHECKS) as mapboxgl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features: checks });
   }
 
   return {
@@ -253,9 +360,25 @@ export function createChoreo(map: mapboxgl.Map, hooks: ChoreoHooks): Choreo {
       }
       return held;
     },
+    trustShown(vehicle, actual) {
+      return trustHold.get(vehicle) ?? actual;
+    },
+    untrustedShown(vehicle, actual) {
+      return actual && !untrustHold.has(vehicle);
+    },
+    routeOpacity(vehicle, untrusted, now) {
+      const since = dissolving.get(vehicle);
+      if (since !== undefined) return Math.max(0, 1 - (now - since) / DISSOLVE_MS);
+      return untrusted && !untrustHold.has(vehicle) ? 0 : 1;
+    },
     clear() {
       for (const n of negotiations.values()) n.arcs.forEach((a) => a.label.remove());
+      flashes.forEach((f) => f.label.remove());
+      flashes = [];
       negotiations.clear();
+      trustHold.clear();
+      untrustHold.clear();
+      dissolving.clear();
       queue = [];
       batch = [];
     },
