@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Volume2, X } from "lucide-react";
+import { Check, Hand, Volume2, X } from "lucide-react";
 import { buildDecision, formatDistance, type DecisionSlot } from "../escalation";
 import type { WorldState } from "../types";
 import { isMuted, onSpeakingChange, setMuted, speak, stop } from "../voice";
@@ -12,6 +12,17 @@ interface Props {
 // Kept outside the component so a remount (or React StrictMode's double effects) neither restarts the clock nor speaks twice.
 const pausedAt = new Map<string, number>();
 const spoken = new Set<string>();
+
+/** The one line that says why the fleet stopped: it won't choose which critical call waits. */
+function why(slot: DecisionSlot): string {
+  const role = slot.role;
+  const units = slot.options.length;
+  const calls = units + 1;
+  const count = (k: number) => (k === 1 ? "one" : k === 2 ? "Two" : String(k));
+  return units <= 1
+    ? `${count(calls)} critical calls, one trusted ${role}. The fleet won’t choose who waits.`
+    : `${count(calls)} critical calls, ${units} trusted ${role}s. The fleet won’t choose who waits.`;
+}
 
 function clock(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -108,11 +119,13 @@ export function EscalationModal({ state, onResolve }: Props) {
     <div className="modal-backdrop">
       <div className="decision" role="dialog" aria-modal="true" aria-labelledby="decision-title">
         <header className="decision-head">
-          <span className="amber-dot" aria-hidden />
+          <Hand size={16} aria-hidden />
           <h2 id="decision-title">Decision needed</h2>
           {decision.slots.length > 1 && <span className="decision-step">{step} of {decision.slots.length}</span>}
           <span className="waiting">Waiting {clock(now - started)}</span>
         </header>
+
+        <p className="decision-why">{why(slot)}</p>
 
         <p className="decision-incident">
           <b className="mono">{slot.incident}</b> {slot.callName}
