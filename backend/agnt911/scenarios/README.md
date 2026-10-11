@@ -4,7 +4,7 @@
 
 ## Demo script
 
-All seven vehicles and seven calls sit within about 1 x 1.5 km of downtown San Jose, so every vehicle has another vehicle within 500 m at every scripted and decision tick, and every hack has a witness. `scripts/check_scenario.py` asserts this with the fake LLM, along with the escalation beat.
+All seven vehicles and five calls sit within about 1 x 1.5 km of downtown San Jose, so every vehicle has another vehicle within 500 m at every scripted and decision tick, and every hack has a witness. The scripted run never asks the human: the fleet decides every call itself, pulling a unit from a less severe call when nobody is free. `scripts/check_scenario.py` asserts all of this with the fake LLM, and also plays the judge beat below.
 
 1. Tick 0: cardiac arrest at 2nd & Santa Clara (I1, sev 5, A1 is 150 m away) and a fire near St James Park (I2, F1). I1 resolves at t33, leaving A1 free.
 2. Tick 5: a crash at Almaden & San Fernando (I3). P1 takes police (on scene t30), A2 takes the ambulance (on scene t53).
@@ -13,6 +13,14 @@ All seven vehicles and seven calls sit within about 1 x 1.5 km of downtown San J
 5. Tick 60: A1, free and 742 m from any active call, is hijacked ("on scene and resolved"). Its feed puts it at I3, so it reports being there and the call being handled. P1, on scene at I3, contradicts it, and A1's trust drops (with real Claude it went untrusted at t60).
 6. Tick 100: unresponsive person at Almaden & San Carlos (I5, sev 4), 200 m from A2, which takes it. I5 resolves at t137.
 7. Tick 120: A3 is hijacked ("200 m from the nearest incident"). It bids 30 s on I5, which is 1,256 m away. P2, 112 m from A3, sees where A3 really is, so trust contradicts the ETA. The bid is left out of the vote.
-8. Tick 140, the human beat: two cardiac-level calls 600 m apart (I6 at Market & San Salvador, I7 at 4th & San Salvador, both sev 5). A1 and A3 are untrusted, so A2 is the only trusted ambulance. A2 wins I6, and I7 goes to the human, offering A2 marked contested (`{"A2": "I6"}`). The judge decides which call gets it, or sends an untrusted unit. If A2 is moved, I6 goes back to the fleet.
+## The human beat (judge-triggered)
+
+**Drop two sev-5 medical calls within 10 ticks with one trusted ambulance free.** Do it after tick 120, once A1 and A3 are untrusted, so A2 is the only trusted ambulance (it is free from about t137, when I5 resolves). In the judge panel, set the drop severity to 5 and drop two medical icons, for example at Market & San Salvador and at 4th & San Salvador (600 m apart).
+
+- The first call gets A2, by vote or pulled from a less severe call.
+- The second call is a true deadlock: severity 5, and every trusted ambulance already holds another severity 5 call it would leave uncovered. It is the only thing that asks the human. The popup offers A2, marked contested with the call it holds. Untrusted units are never offered.
+- Whatever the judge picks is final. If A2 is moved, the call it left goes back to the fleet and waits for a free ambulance. Neither call pops up again.
+
+`scripts/check_scenario.py` drops the pair at t145 and t150 and checks that this is exactly one popup.
 
 The `fake_call` preset (hijack box, no vehicle) places a sev 4 shooting from caller-1. The first police car to arrive finds nothing, the call is marked a false report, and caller-1's credibility drops from 1.0 to 0.7.

@@ -6,15 +6,28 @@ const TYPES: IncidentType[] = ["medical", "fire", "crash", "hazard", "shooting"]
 interface Props {
   armed: IncidentType | null; // click-to-place: this icon waits for a map click
   onArm: (type: IncidentType | null) => void;
+  severity: number;
+  onSeverity: (severity: number) => void;
 }
 
+const SEVERITIES = [3, 4, 5];
+
 /** Five incident icons: drag one onto the map, or click one and then click the map. Either way MapView's onDropIncident posts it. */
-export function DropIncident({ armed, onArm }: Props) {
+export function DropIncident({ armed, onArm, severity, onSeverity }: Props) {
   return (
     <section className="judge-section drop-incident">
-      <h3>Drop incident</h3>
+      <div className="drop-head">
+        <h3>Drop incident</h3>
+        <div className="drop-sev" role="radiogroup" aria-label="Severity of dropped calls">
+          {SEVERITIES.map((n) => (
+            <button key={n} role="radio" aria-checked={severity === n} className={severity === n ? "on" : ""} onClick={() => onSeverity(n)}>
+              sev {n}
+            </button>
+          ))}
+        </div>
+      </div>
       <p className="hint">
-        {armed ? `Click the map to place the ${armed} call (Esc cancels).` : "Drag an icon onto the map, or click one and then the map. Severity 4."}
+        {armed ? `Click the map to place the ${armed} call (Esc cancels).` : `Drag an icon onto the map, or click one and then the map. Severity ${severity}.`}
       </p>
       <div className="drop-icons">
         {TYPES.map((t) => (

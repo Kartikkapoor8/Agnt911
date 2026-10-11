@@ -8,9 +8,14 @@ One call to run_round decides every open incident (or the ones listed):
               capability_match >= 0.5, at most 4.
   4. RESOLVE  plain code, highest severity first: weight votes by trust; more than 60% of
               honest weight wins. A vehicle that wins anywhere leaves every later option list
-              and those votes are re-tallied. No winner: severity 1-3 takes the heaviest
-              option, severity 4-5 asks a human. A severity 1-2 incident whose role has no
-              eligible bids, or whose options were all taken, goes to the next role in its list.
+              and those votes are re-tallied. No winner: the heaviest option goes. A role with
+              no free option keeps the vehicle already on its way; failing that the fleet pulls
+              the trusted vehicle of that role it can best spare (free first, then the one on
+              the lowest-severity call below this one) and that call is negotiated again. A
+              severity 1-2 incident with nobody left goes to the next role in its list. Only a
+              severity 5 call whose every trusted vehicle of the role holds another severity 5
+              call it would leave uncovered asks a human, and never one a human already settled.
+              Untrusted vehicles are never pulled and never offered.
 Claims from rounds 1 and 2 go through the trust module's verification hook.
 Baseline mode (world.baseline) is the central dispatcher: round 1 only, no checks,
 every report believed, best eligible bid per role wins.
@@ -41,7 +46,7 @@ MAX_ROUNDS = 4
 MAX_OPTIONS = 4
 MIN_CAPABILITY = 0.5
 CONSENSUS_SHARE = 0.6
-ESCALATE_SEVERITY = 4
+DEADLOCK_SEVERITY = 5  # only a call this severe can stop for a human, and only against calls as severe
 SINGLE_ROLE_MAX_SEVERITY = 2
 PROPOSE, COUNTER, VOTE, RESOLVE = 1, 2, 3, 4
 PHASES = {PROPOSE: "PROPOSE", COUNTER: "COUNTER", VOTE: "VOTE", RESOLVE: "RESOLVE"}
@@ -160,7 +165,7 @@ async def run_round(
     votes = _record_votes(world, outputs, options)
 
     # Round 4: RESOLVE (no LLM)
-    return _resolve_all(world, incidents, bids, options, votes, claims, checks)
+    return _resolve_all(world, incidents, bids, options, votes, claims, checks, disproven)
 
 
 def _incidents_to_decide(world: World, incident_ids: list[str] | None) -> list[Incident]:
@@ -401,12 +406,14 @@ def _resolve_all(
     votes: dict[Slot, list[Vote]],
     claims: list[Claim],
     checks: list[dict],
+    disproven: set[tuple[str, str]] = frozenset(),
 ) -> list[Plan]:
     """Resolve incidents highest severity first so no vehicle wins twice; return plans in the original order."""
     taken: dict[str, str] = {}  # vehicle id -> the incident that won it earlier in this round
     plans: dict[str, Plan] = {}
+    settled = settled_by_human(world)
     for incident in sorted(incidents, key=lambda i: -i.severity):  # stable: ties keep incident order
-        plan = _resolve(world, incident, bids, options, votes, claims, checks, taken)
+        plan = _resolve(world, incident, bids, options, votes, claims, checks, taken, disproven, settled)
         taken.update(dict.fromkeys(plan.assigned, incident.id))
         _emit_plan(world, plan)
         plans[incident.id] = plan
@@ -421,10 +428,11 @@ def _emit_plan(world: World, plan: Plan) -> None:
              contested=plan.evidence.get("contested", {}))
         return
     kind = "plan_committed" if plan.consensus or world.baseline else "plan_no_consensus"
+    evidence = plan.evidence or {}
     emit(world, kind, incident=plan.incident, assigned=plan.assigned, tally=plan.tally,
          round_reached=plan.round_reached, baseline=world.baseline,
-         fallback=(plan.evidence or {}).get("fallback"), believed=bool((plan.evidence or {}).get("believed")),
-         kept=(plan.evidence or {}).get("kept"))
+         fallback=evidence.get("fallback"), believed=bool(evidence.get("believed")),
+         kept=evidence.get("kept"), reason=evidence.get("reason"), pulled=evidence.get("pulled"))
 
 
 def _resolve(
@@ -436,6 +444,8 @@ def _resolve(
     claims: list[Claim],
     checks: list[dict],
     taken: dict[str, str],
+    disproven: set[tuple[str, str]] = frozenset(),
+    settled: set[str] = frozenset(),
 ) -> Plan:
     """Fill each required role of one incident from the options still free, and return its Plan."""
     plan = Plan(
@@ -452,7 +462,7 @@ def _resolve(
             assigned = [report.vehicle] if report.type == "on_scene" else []
             return plan.model_copy(update={"assigned": assigned, "evidence": {"believed": report.model_dump()}})
 
-    assigned, role_consensus, escalations, kept = [], [], [], {}
+    assigned, role_consensus, escalations, kept, pulled = [], [], [], {}, []
     tally_all: dict[str, float] = {}
     voted_on: list[str] = []  # every role's options as voted on, so a vote's option_index stays readable
     for slot in [s for s in options if s[0] == incident.id]:  # the slots actually built, fallbacks included
@@ -460,19 +470,26 @@ def _resolve(
         free = [b for b in options[slot] if b.vehicle not in taken]
         voted_on += [b.vehicle for b in options[slot]]
         if world.baseline:
-            winner, consensus, escalation = (free[0].vehicle if free else None), False, None
+            winner, consensus = (free[0].vehicle if free else None), False
         else:
-            winner, consensus, tally, escalation = _resolve_role(
-                world, incident, role, options[slot], free, votes.get(slot, []), claims, checks, taken)
+            winner, consensus, tally = _resolve_role(world, options[slot], free, votes.get(slot, []))
             tally_all.update(tally)
-        if escalation:
-            escalations.append(escalation)
-        elif winner:
+        if winner:
             assigned.append(winner)
         elif keep := _incumbent(world, incident, role, taken):
             # Nobody new to send: the vehicle already on its way keeps the role (nothing to disagree about).
             assigned.append(keep)
             kept[role], consensus = keep, not world.baseline
+        elif world.baseline:
+            pass  # the central dispatcher only sends bidders
+        elif pull := _pull(world, incident, role, taken, assigned, bids, disproven):
+            # The fleet's own rule, not a vote: nothing to disagree about.
+            assigned.append(pull["vehicle"])
+            pulled.append(pull)
+            consensus = True
+        elif escalation := _deadlock(world, incident, role, taken, settled, options[slot], votes.get(slot, []),
+                                     claims, checks):
+            escalations.append(escalation)
         role_consensus.append(consensus)
 
     evidence = None
@@ -484,6 +501,8 @@ def _resolve(
             assigned, role_consensus, evidence = [fallback["vehicle"]], [False], {"fallback": fallback}
     if kept:
         evidence = {**(evidence or {}), "kept": kept}
+    if pulled:
+        evidence = {**(evidence or {}), "pulled": pulled, "reason": _pull_reason(pulled)}
     return plan.model_copy(update={
         "assigned": assigned,
         "consensus": bool(role_consensus) and all(role_consensus),
@@ -525,19 +544,13 @@ def _resolve_time_fallback(
 
 def _resolve_role(
     world: World,
-    incident: Incident,
-    role: str,
     voted_on: list[Bid],
     free: list[Bid],
     votes: list[Vote],
-    claims: list[Claim],
-    checks: list[dict],
-    taken: dict[str, str],
-) -> tuple[str | None, bool, dict[str, float], dict | None]:
-    """Tally one role's votes among the options still free and return (winner, consensus, tally, escalation).
+) -> tuple[str | None, bool, dict[str, float]]:
+    """Tally one role's votes among the options still free and return (winner, consensus, tally).
 
-    If every option was won by a higher-severity incident this round, the human is shown those options
-    anyway, marked contested with the incident holding each: the choice is which call gets the vehicle.
+    More than 60% of honest weight is consensus; otherwise the heaviest free option still goes.
     """
     tally = {b.vehicle: 0.0 for b in free}
     for vote in votes:
@@ -545,31 +558,134 @@ def _resolve_role(
         if choice in tally:  # a vote for a vehicle already taken elsewhere no longer counts
             tally[choice] += trust.vote_weight(world.vehicles[vote.vehicle])
     honest_total = sum(trust.vote_weight(v) for v in world.vehicles.values() if not v.untrusted)
-    threshold = CONSENSUS_SHARE * honest_total
     # max() keeps the first of equal weights, and options are already best-bid first
     leader = max(tally, key=lambda vid: tally[vid]) if tally else None
+    consensus = leader is not None and honest_total > 0 and tally[leader] > CONSENSUS_SHARE * honest_total
+    return leader, consensus, tally
 
-    if leader is not None and honest_total > 0 and tally[leader] > threshold:
-        return leader, True, tally, None
-    if incident.severity >= ESCALATE_SEVERITY:
-        contested = {b.vehicle: taken[b.vehicle] for b in voted_on if b.vehicle in taken} if not free else {}
-        shown = voted_on if contested else free
-        decision = trust.should_escalate({
-            "incident": incident.id,
-            "severity": incident.severity,
-            "role": role,
-            "round": RESOLVE,
-            "options": [b.model_dump() for b in shown],
-            "tally": {**dict.fromkeys(contested, 0.0), **tally},
-            "honest_total": honest_total,
-            "threshold": threshold,
-            "votes": [v.model_dump() for v in votes],
-            "contradicting_claims": _contradicting_claims(incident.id, claims, checks),
-            "checks": checks,  # lets should_escalate name who checked each contradicting claim
-        })
-        if decision:
-            return None, False, tally, {"role": role, **decision, **({"contested": contested} if contested else {})}
-    return leader, False, tally, None
+
+def _live_call(world: World, vehicle: Vehicle) -> str | None:
+    """The unresolved call a vehicle is assigned to, or None if it is free."""
+    iid = vehicle.target_incident
+    return iid if iid in world.incidents and world.incidents[iid].status != "resolved" else None
+
+
+def _spare(world: World, vehicle: Vehicle, call: str, taken: dict[str, str]) -> bool:
+    """True if the call keeps another trusted vehicle of the same type without this one."""
+    return any(v.id != vehicle.id and v.type == vehicle.type and not v.untrusted and v.id not in taken
+               and v.target_incident == call for v in world.vehicles.values())
+
+
+def _pull(
+    world: World,
+    incident: Incident,
+    role: str,
+    taken: dict[str, str],
+    assigned: list[str],
+    bids: dict[tuple[str, str], Bid],
+    disproven: set[tuple[str, str]],
+) -> dict | None:
+    """Pick the trusted vehicle of this role the fleet can best spare for this incident, or None.
+
+    Free vehicles first, then the lowest-severity call: only calls less severe than this one, unless the
+    call keeps another unit of the same type. Nearest breaks ties. Never an untrusted vehicle, one already
+    won this round, one whose bid here was caught lying, or one that said it can't do this call.
+    Returns {vehicle, role, from, from_severity}; from is None for a free vehicle.
+    """
+    candidates = []
+    for v in world.vehicles.values():
+        bid = bids.get((v.id, incident.id))
+        if (v.type != role or v.untrusted or v.id in taken or v.id in assigned or (v.id, incident.id) in disproven
+                or (bid is not None and bid.capability_match < MIN_CAPABILITY)):
+            continue
+        call = _live_call(world, v)
+        if call == incident.id:
+            continue
+        severity = world.incidents[call].severity if call else 0
+        if call and severity >= incident.severity and not _spare(world, v, call, taken):
+            continue
+        candidates.append((severity, haversine_m(v.location, incident.location), v.id, call))
+    if not candidates:
+        return None
+    severity, _dist, vid, call = min(candidates)
+    return {"vehicle": vid, "role": role, "from": call, "from_severity": severity if call else None}
+
+
+def _pull_reason(pulled: list[dict]) -> str:
+    """'pulled from I6' for one pull; each vehicle named when there are several."""
+    def one(p: dict, named: bool) -> str:
+        what = f"pulled from {p['from']}" if p["from"] else "sent while free (no bid)"
+        return f"{p['vehicle']} {what}" if named else what
+    return one(pulled[0], False) if len(pulled) == 1 else "; ".join(one(p, True) for p in pulled)
+
+
+def settled_by_human(world: World) -> set[str]:
+    """Calls a human already decided: each answered escalation's call, the calls its options held, and every call in the answer."""
+    settled: set[str] = set()
+    asked = []
+    for e in world.events:
+        if e.type == "escalated_to_human":
+            asked.append(e)
+        elif e.type == "human_resolved":
+            for q in asked:
+                settled.add(q.incident)
+                settled.update((q.data.get("contested") or {}).values())
+            settled.update(iid for iid in (e.data.get("assignments") or {}).values() if iid)
+            asked = []
+    return settled
+
+
+def _deadlock(
+    world: World,
+    incident: Incident,
+    role: str,
+    taken: dict[str, str],
+    settled: set[str],
+    voted_on: list[Bid],
+    votes: list[Vote],
+    claims: list[Claim],
+    checks: list[dict],
+) -> dict | None:
+    """Ask a human only on a true deadlock: a severity 5 call whose every trusted vehicle of this role holds
+    another severity 5 call it would leave uncovered. Never for a call a human already settled.
+
+    The options are those tied-up vehicles, each marked contested with the call holding it.
+    """
+    if incident.severity < DEADLOCK_SEVERITY or incident.id in settled:
+        return None
+    trusted = [v for v in world.vehicles.values() if v.type == role and not v.untrusted]
+    tied = {}
+    for v in sorted(trusted, key=lambda v: (haversine_m(v.location, incident.location), v.id)):
+        call = taken.get(v.id) or _live_call(world, v)
+        if call is None or call == incident.id or world.incidents[call].severity < DEADLOCK_SEVERITY:
+            return None
+        tied[v.id] = call
+    if not tied:
+        return None  # no trusted vehicle of this role at all: nobody a human could send either
+    decision = trust.should_escalate({
+        "incident": incident.id,
+        "severity": incident.severity,
+        "role": role,
+        "round": RESOLVE,
+        "options": [],
+        "tally": {},
+        "honest_total": sum(trust.vote_weight(v) for v in world.vehicles.values() if not v.untrusted),
+        "threshold": 0.0,
+        "votes": [v.model_dump() for v in votes],
+        "contradicting_claims": _contradicting_claims(incident.id, claims, checks),
+        "checks": checks,  # lets should_escalate name who checked each contradicting claim
+    }) or {}
+    held = ", ".join(f"{vid} is on {call}" for vid, call in tied.items())
+    return {
+        **decision,
+        "role": role,
+        "reason": f"{incident.id} (severity 5) needs {'an' if role[0] in 'aeiou' else 'a'} {role}, and every "
+                  f"trusted {role} holds another severity 5 call: {held}",
+        "options": list(tied),
+        "choices": [{"vehicle": vid, "label": f"Send {vid} (leaves {call})", "backers": [], "weight": 0.0}
+                    for vid, call in tied.items()],
+        "contested": tied,
+    }
 
 
 def _checks_for(incident_id: str, checks: list[dict]) -> list[dict]:

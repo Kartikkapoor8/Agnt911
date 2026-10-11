@@ -17,12 +17,14 @@ BACKEND = Path(__file__).parents[1]
 
 
 def test_check_scenario_passes_on_the_demo():
-    """scripts/check_scenario.py: every vehicle has a witness at every scripted/decision tick; both hijacks catchable."""
+    """scripts/check_scenario.py: witnesses everywhere, both hijacks catchable, no popup in the scripted run,
+    and exactly one for the judge beat (two sev-5 medical calls dropped at t145 and t150)."""
     out = subprocess.run([sys.executable, "scripts/check_scenario.py"], cwd=BACKEND, capture_output=True, text=True)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "PASS" in out.stdout
-    # the t140 beat: two severity 5 calls, one free trusted ambulance (A2), and the human is asked about I7
-    assert "t140 I7: options ['A2'], contested {'A2': 'I6'}" in out.stdout
+    # A1 and A3 are untrusted by then, so A2 takes J1 and J2 is the only popup, offering A2 (holding J1)
+    assert "t150 J2: options ['A2'], contested {'A2': 'J1'}" in out.stdout
+    assert out.stdout.count("options [") == 1
 
 
 def test_renegotiation_keeps_a_vehicle_already_en_route():
@@ -103,23 +105,32 @@ def test_inject_api_takes_fake_call_without_a_vehicle(tmp_path):
         assert state["compromised"] == []
 
 
-def test_human_may_move_a_vehicle_off_another_call_and_that_call_is_renegotiated(tmp_path):
-    """At the t140 beat the judge sends A2 to I7 instead of I6; I6 goes back to the fleet."""
+def test_judge_beat_human_moves_a_vehicle_and_the_call_it_left_never_pops_up_again(tmp_path):
+    """The README beat on the demo: two sev-5 drops at t145 and t150; the judge sends A2 to J2, J1 waits for the fleet."""
     async def scenario():
         engine = Engine(tmp_path, llm_fn=fake_llm)
+        drops = {145: ("J1", -121.88979), 150: ("J2", -121.88302)}
         try:
             while engine.escalation is None:
+                assert engine.world.tick <= 150, "the judge beat never escalated"
+                if engine.world.tick in drops:
+                    iid, lng = drops[engine.world.tick]
+                    await engine.add_incident({"id": iid, "type": "medical", "severity": 5,
+                                               "location": {"lat": 37.33115, "lng": lng}})
                 await engine.run_round()
                 if engine.escalation is None:
                     await engine.step(1.0)
-            assert engine.world.tick == 140
+            assert engine.world.tick == 150
             [plan] = engine.escalation["plans"]
-            assert plan["incident"] == "I7" and plan["evidence"]["contested"] == {"A2": "I6"}
-            await engine.resolve({"A2": "I7"})
-            assert engine.world.vehicles["A2"].target_incident == "I7"
-            assert engine.world.incidents["I6"].status == "open" and "I6" in engine._pending
-            human = [e for e in engine.world.events if e.type == "human_resolved"]
-            assert human and human[-1].data["assignments"] == {"A2": "I7"}
+            assert plan["incident"] == "J2" and plan["evidence"]["contested"] == {"A2": "J1"}
+            await engine.resolve({"A2": "J2"})
+            assert engine.world.vehicles["A2"].target_incident == "J2"
+            assert engine.world.incidents["J1"].status == "open" and "J1" in engine._pending
+            for _ in range(15):
+                await engine.run_round()
+                assert engine.escalation is None
+                await engine.step(1.0)
+            assert sum(e.type == "escalated_to_human" for e in engine.world.events) == 1
         finally:
             await engine.stop()
     asyncio.run(scenario())

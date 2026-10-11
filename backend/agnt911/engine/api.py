@@ -43,6 +43,14 @@ class ModeChange(BaseModel):
     mode: Literal["protected", "baseline"]
 
 
+class NewIncident(BaseModel):
+    """A call the judge drops on the map; the engine gives it the next J-id."""
+    type: Literal["medical", "fire", "crash", "hazard", "shooting"]
+    severity: int = Field(ge=1, le=5)
+    location: dict
+    label: str | None = Field(default=None, max_length=200)
+
+
 class HumanResolution(BaseModel):
     """An explicit human choice of vehicle targets."""
     assignments: dict[str, str | None] = Field(min_length=1, max_length=7)
@@ -103,6 +111,20 @@ def create_app(engine: Engine | None = None) -> FastAPI:
         """Reset the scenario with the selected baseline flag."""
         await request.app.state.engine.set_mode(body.mode)
         return await request.app.state.engine.state()
+
+    @app.post("/incident")
+    async def incident(body: NewIncident, request: Request):
+        """Add a judge-dropped call (id J1, J2, ...) and schedule its negotiation."""
+        eng = request.app.state.engine
+        n = 1 + sum(1 for iid in eng.world.incidents if iid.startswith("J"))
+        while f"J{n}" in eng.world.incidents:
+            n += 1
+        try:
+            await eng.add_incident({"id": f"J{n}", "type": body.type, "severity": body.severity,
+                                    "location": body.location, "label": body.label})
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {"accepted": True, "incident": f"J{n}"}
 
     @app.post("/resolve")
     async def resolve(body: HumanResolution, request: Request):

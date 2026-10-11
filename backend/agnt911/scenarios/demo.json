@@ -18,9 +18,7 @@
     {"tick": 40, "type": "escalate", "incident": "I3", "severity": 5, "label": "Crash now multi-vehicle pileup"},
     {"tick": 60, "type": "inject", "vehicle": "A1", "preset_id": "on_scene_resolved"},
     {"tick": 100, "type": "incident", "incident": {"id": "I5", "type": "medical", "severity": 4, "location": {"lat": 37.33205, "lng": -121.89318}, "label": "Unresponsive person, Almaden & San Carlos"}},
-    {"tick": 120, "type": "inject", "vehicle": "A3", "preset_id": "closer_than_you_are"},
-    {"tick": 140, "type": "incident", "incident": {"id": "I6", "type": "medical", "severity": 5, "location": {"lat": 37.33115, "lng": -121.88979}, "label": "Cardiac arrest, Market & San Salvador"}},
-    {"tick": 140, "type": "incident", "incident": {"id": "I7", "type": "medical", "severity": 5, "location": {"lat": 37.33115, "lng": -121.88302}, "label": "Overdose, 4th & San Salvador"}}
+    {"tick": 120, "type": "inject", "vehicle": "A3", "preset_id": "closer_than_you_are"}
   ],
   "presets": [
     {"id": "on_scene_resolved", "label": "Report on scene and resolved", "preset": {"kind": "on_scene_resolved"}},

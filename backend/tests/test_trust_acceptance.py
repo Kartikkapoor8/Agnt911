@@ -893,14 +893,12 @@ def test_should_escalate_never_mutates_input():
         assert state == before
 
 
-def test_split_vote_through_protocol_escalates_with_real_trust():
-    """Severity 5 with a 3/4 split goes to a human through the real trust module."""
+def test_split_vote_through_protocol_takes_heaviest_option_with_real_trust():
+    """Severity 5 with a 3/4 split no longer asks a human (protocol: human only for sev-5 vs sev-5 deadlock):
+    the heaviest option goes, without consensus."""
     world = only(build_fake_world(), "I1")
     [plan] = run(world, ScriptedLLM(votes=SPLIT))
-    assert plan.escalated and not plan.consensus and plan.assigned == []
-    assert plan.evidence["options"] == [plan.options[1], plan.options[0]]
-    assert len(plan.evidence["evidence"]["votes"]) == 7
-    assert plan.evidence["id"].startswith("esc-I1-")
+    assert not plan.escalated and not plan.consensus and plan.assigned == [plan.options[1]]
 
 
 # ---------------------------------------------------------------- 8. metrics helpers

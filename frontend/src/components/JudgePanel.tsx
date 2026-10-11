@@ -13,15 +13,17 @@ interface Props {
   onInject: (req: InjectRequest) => Promise<void>;
   placing: IncidentType | null;
   onArm: (type: IncidentType | null) => void;
+  dropSeverity: number;
+  onDropSeverity: (severity: number) => void;
 }
 
 /** Right-hand judge console: hijack a vehicle, drop an incident, place a fake call, then the fleet strip. */
-export function JudgePanel({ state, selectedId, onSelect, onInject, placing, onArm }: Props) {
+export function JudgePanel({ state, selectedId, onSelect, onInject, placing, onArm, dropSeverity, onDropSeverity }: Props) {
   return (
     <Panel className="judge-panel" title="Judge">
       <div className="judge-body">
         <HackBox selectedId={selectedId} vehicles={state.vehicles} onSelect={onSelect} presets={state.presets} onInject={onInject} />
-        <DropIncident armed={placing} onArm={onArm} />
+        <DropIncident armed={placing} onArm={onArm} severity={dropSeverity} onSeverity={onDropSeverity} />
         <FakeCallBox presets={state.presets} onInject={onInject} />
         <FleetPanel state={state} selectedId={selectedId} onSelect={onSelect} />
       </div>

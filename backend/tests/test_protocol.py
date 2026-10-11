@@ -95,15 +95,13 @@ def test_untrusted_vehicle_votes_weigh_zero():
     assert plan.consensus and plan.assigned == [plan.options[0]]
 
 
-def test_severity_5_split_vote_escalates():
-    """Severity 5 with votes split 3/4 (57% < 60%) goes to a human with the two top options."""
+def test_severity_5_split_vote_takes_heaviest_option_without_a_human():
+    """Severity 5 with votes split 3/4 (57% < 60%) no longer asks a human: the heaviest option goes."""
     world = only(build_fake_world(), "I1", severity=5)
     split = {"A1": 0, "F1": 0, "P1": 0, "A2": 1, "A3": 1, "F2": 1, "P2": 1}
     [plan] = run(world, ScriptedLLM(votes=split))
-    assert plan.escalated and not plan.consensus and plan.assigned == []
+    assert not plan.escalated and not plan.consensus and plan.assigned == [plan.options[1]]
     assert plan.tally == {plan.options[0]: 3.0, plan.options[1]: 4.0, **{o: 0.0 for o in plan.options[2:]}}
-    assert plan.evidence["options"] == [plan.options[1], plan.options[0]]
-    assert len(plan.evidence["evidence"]["votes"]) == 7
 
 
 def test_low_severity_split_vote_takes_heaviest_option():
@@ -236,7 +234,8 @@ def test_capability_floor_drops_weak_bids_and_empty_slots_take_no_bids_path():
 
     llm = ScriptedLLM(edit_bids=all_weak)
     [plan] = run(only(build_fake_world(), "I1", severity=5), llm)
-    assert plan.options == [] and plan.assigned == [] and plan.escalated
+    # every ambulance said it can't do this call: nobody is pulled, and with free ambulances it is no deadlock
+    assert plan.options == [] and plan.assigned == [] and not plan.escalated
     assert 3 not in llm.rounds()
 
 
@@ -266,7 +265,7 @@ def test_every_vehicle_prompt_forbids_early_en_route():
 
 
 def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
-    """A1 is the only bidder on two calls: the severity 5 call gets it, the other falls to no bids."""
+    """A1 is the only bidder on two calls: the severity 5 call gets it; the fleet sends a free ambulance to the other."""
     world = build_fake_world()
     world.incidents = {i: world.incidents[i] for i in ("I1", "I5")}
     world.incidents["I1"].severity = 3
@@ -277,8 +276,10 @@ def test_higher_severity_resolves_first_and_a_vehicle_never_wins_twice():
 
     i1, i5 = run(world, ScriptedLLM(edit_bids=only_a1))
     assert i5.assigned == ["A1"] and i5.consensus
-    assert i1.assigned == [] and not i1.consensus and not i1.escalated
     assert i1.options == ["A1"] and "A1" not in i1.tally  # voted on, then re-tallied without it
+    nearest = min(("A2", "A3"), key=lambda v: protocol.haversine_m(world.vehicles[v].location, world.incidents["I1"].location))
+    assert i1.assigned == [nearest] and not i1.escalated
+    assert i1.evidence["pulled"] == [{"vehicle": nearest, "role": "ambulance", "from": None, "from_severity": None}]
 
 
 def test_scenario_preset_leaves_the_hacked_vehicles_prompt_alone():
@@ -323,13 +324,16 @@ def test_minor_hazard_with_no_fire_bids_falls_back_to_police():
 
 
 def test_minor_hazard_whose_fire_engine_is_taken_falls_back_to_police_at_resolve():
-    """F1 bids on the fire and the hazard, wins the fire first; the hazard then goes to the best free police car."""
+    """F1 bids on the fire and the hazard, wins the fire first; F2 is busy on a more severe call, so the
+    hazard goes to the best free police car."""
     def only_f1_fights_fire(vid, bids):
         return [] if vid == "F2" else bids
 
     world = build_fake_world()
-    world.incidents = {i: world.incidents[i] for i in ("I2", "I4")}
-    i2, i4 = run(world, ScriptedLLM(edit_bids=only_f1_fights_fire))
+    world.incidents = {i: world.incidents[i] for i in ("I2", "I3", "I4")}
+    world.incidents["I3"] = world.incidents["I3"].model_copy(update={"type": "fire", "status": "assigned", "assigned": ["F2"]})
+    world.vehicles["F2"].status, world.vehicles["F2"].target_incident = "en_route", "I3"
+    i2, i4 = run(world, ScriptedLLM(edit_bids=only_f1_fights_fire), ["I2", "I4"])
     assert i2.assigned == ["F1"] and i2.consensus
     assert i4.options == ["F1"] and "F1" not in i4.tally
     assert i4.assigned == ["P1"] and not i4.consensus and not i4.escalated

@@ -263,7 +263,7 @@ export type EventType =
 | POST | `/inject` | `{"vehicle_id": "A2", "preset_id": "on_scene_resolved"}`, or `{"vehicle_id": "A2", "text": "free text"}`, or `{"preset_id": "fake_call"}` (no vehicle) | 200, `{"accepted": true, "vehicle_id": "A2" or null}` | 404 unknown vehicle; 422 unknown preset, blank text, both or neither, or a vehicle preset without `vehicle_id` |
 | POST | `/resolve` | `{"assignments": {"A2": "I7"}}`: vehicle id to incident id, covering every required role of each pending escalation | 200, `State` (now `paused: false`) | 409 if nothing is pending or the choice doesn't cover the pending call(s); the body says which |
 | POST | `/mode` | `{"mode": "baseline"}` or `{"mode": "protected"}` | 200, `State` of the **new run** (`run_id` changes, `tick` resets, the finished run is appended to `comparison`) | 422 unknown mode |
-| POST | `/incident` | none | **missing** (404) | see Missing below |
+| POST | `/incident` | `{"type": "medical", "severity": 4, "location": {"lat": .., "lng": ..}, "label": "text"}` | 200, `{"accepted": true, "incident": "J1"}` (ids J1, J2, …) | 422 bad type, severity or location |
 
 Error bodies are FastAPI's: `{"detail": "Unknown vehicle"}` or `{"detail": [{"type": ..., "loc": [...], "msg": ...}]}` for validation errors.
 
@@ -308,7 +308,7 @@ Each event is `{tick, type, vehicle, incident, data}`.
 2. **Vehicles freeze during a round with the real API.** On the stepped clock no tick advances while the fleet negotiates, which takes about 15-30 s with Claude and is instant with the fake LLM. Show a "negotiating" state when `integration.last_round_status == "running"`, and don't treat a frozen tick as a dead server.
 3. **`/state` is big and grows.** It was about 500 KB at t160, because `recent_messages` and `tick_records` are uncapped (`events`, `check_events` and `log` are capped at 500). At 500 ms polling that's about 1 MB/s on localhost, which is fine for the demo. Don't deep-diff the whole object every poll; key off `tick`, `run_id` and array lengths.
 4. **A run reset changes `run_id`.** `/mode` starts a new run: `tick` goes back to 0 and `events` starts over. Reset the feed and the map when `run_id` changes.
-5. **A popup can offer no options.** `escalation.plans[].evidence.options` can be `[]` when every candidate is untrusted or hacked (seen after several injects). The popup must then let the judge pick any vehicle of `evidence.role`. `evidence.contested` (`{vehicle: incident}`) marks options already holding another call; picking one moves that vehicle, and the call it leaves is renegotiated.
+5. **Popups are rare.** The fleet pulls units itself. A human is asked only when a severity 5 call's every trusted vehicle of the role holds another severity 5 call (the judge beat in `scenarios/README.md`). `evidence.options` are those trusted vehicles, and `evidence.contested` (`{vehicle: incident}`) names the call each holds; picking one moves it, and the call it leaves goes back to the fleet. Untrusted vehicles are never offered. A call a human settled never pops up again. `plan_committed` carries `reason`/`pulled` when the fleet pulled a unit.
 6. **`paused` stays true until a human answers.** Only `POST /resolve` (or `POST /mode`) clears it, and nothing ticks meanwhile.
 7. **Join mid-run.** The engine starts ticking when the server starts; the first poll may land at tick 5 or later.
 8. **`metrics.first_untrusted_tick` is one tick later than the `vehicle_untrusted` event** (101 vs 100). Use the event's tick for animations.
@@ -318,7 +318,6 @@ Each event is `{tick, type, vehicle, incident, data}`.
 
 | item | owner | smallest fix |
 |---|---|---|
-| No `POST /incident` (the engine has `add_incident`, `update_incident` and `resolve_incident`, but no routes) | Greg | Add `POST /incident` (an `Incident` body plus optional `label`) calling `engine.add_incident`. Optional: `PATCH /incident/{id}` calling `update_incident`. |
 | `/state` size grows without bound (`recent_messages`, `tick_records`) | Greg | Cap both to the last N in `_state()`, or add `?since=<tick>` |
 | `first_untrusted_tick` one tick late | Greg / Chris | Build the tick record before advancing the tick (see the e2e report) |
 | `false_report` not observed in this run | none | The fake call was placed after t160 and the run switched mode before a police car arrived. The path is covered by `tests/test_scenario.py::test_fake_call_is_discredited_when_police_arrive`. |

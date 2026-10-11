@@ -242,13 +242,17 @@ class Engine:
             for vid, vehicle in self.world.vehicles.items():
                 if vehicle.target_incident == plan.incident and vid not in assigned:
                     assignments.setdefault(vid, None)
-        # A retained assignment cannot be silently stolen from a different call.
+        # A retained assignment cannot be silently stolen from a different call, unless the protocol pulled it
+        # from that call by rule (plan.evidence.pulled); that call is then negotiated again (see run_round).
         decided = {p.incident for p in plans if not p.escalated}
+        pulls = {(pull["vehicle"], pull["from"]) for p in plans if not p.escalated
+                 for pull in (p.evidence or {}).get("pulled", []) if pull.get("from")}
         for vid, iid in assignments.items():
             vehicle = self.world.vehicles.get(vid)
             if vehicle is None:
                 raise ValueError("Unknown assigned vehicle")
-            if iid and vehicle.target_incident and vehicle.target_incident not in decided and not human:
+            if (iid and vehicle.target_incident and vehicle.target_incident not in decided and not human
+                    and (vid, vehicle.target_incident) not in pulls):
                 raise ValueError("Vehicle is already committed to another incident")
         assign(self.world.model_copy(deep=True), assignments)
         return assignments
@@ -370,6 +374,10 @@ class Engine:
                 self.escalation = {"plans": escalated} if escalated else None
                 self._escalated_this_tick = self._escalated_this_tick or bool(escalated)
                 self._pending.difference_update(ids)
+                # A call the fleet pulled a vehicle from goes back up for negotiation.
+                left = {pull["from"] for p in plans if not p.escalated
+                        for pull in (p.evidence or {}).get("pulled", []) if pull.get("from")} - set(ids)
+                self._pending.update(iid for iid in left if self.world.incidents[iid].status != "resolved")
                 self.last_round_status = "completed"
                 self._refresh_coverage()
                 self._incident_times = trust.track_incidents(self._incident_times, self.world)

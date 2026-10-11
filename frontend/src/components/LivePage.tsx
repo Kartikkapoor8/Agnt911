@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { InjectRequest, Mode } from "../api";
-import { usePendingIncidents } from "../pendingIncidents";
+import { DROP_SEVERITY, usePendingIncidents } from "../pendingIncidents";
 import type { IncidentType, Location, WorldState } from "../types";
 import { EscalationModal } from "./EscalationModal";
 import { FeedPanel } from "./FeedPanel";
@@ -30,12 +30,13 @@ export function LivePage(props: Props) {
   const { state, stale, selectedId, onSelect } = props;
   const [highlight, setHighlight] = useState<Highlight | null>(null);
   const [placing, setPlacing] = useState<IncidentType | null>(null); // click-to-place
+  const [dropSeverity, setDropSeverity] = useState(DROP_SEVERITY);
   const { pending, drop } = usePendingIncidents(state.incidents);
   const negotiating = state.integration.last_round_status === "running";
 
   const onDropIncident = (type: IncidentType, at: Location) => {
     setPlacing(null);
-    void drop(type, at);
+    void drop(type, at, dropSeverity);
   };
 
   // Esc puts an armed incident icon down.
@@ -81,7 +82,7 @@ export function LivePage(props: Props) {
         presets={state.presets}
         onPick={(t) => setHighlight({ ...t, nonce: Date.now() })}
       />
-      <JudgePanel state={state} selectedId={selectedId} onSelect={onSelect} onInject={props.onInject} placing={placing} onArm={setPlacing} />
+      <JudgePanel state={state} selectedId={selectedId} onSelect={onSelect} onInject={props.onInject} placing={placing} onArm={setPlacing} dropSeverity={dropSeverity} onDropSeverity={setDropSeverity} />
       <MetricsDrawer state={state} onSetMode={props.onSetMode} />
       <Toasts />
       <EscalationModal state={state} onResolve={props.onResolve} />

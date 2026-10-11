@@ -524,3 +524,9 @@ body { background: var(--page); color: #e5e2e1; font: 400 14px/20px var(--sans);
 /* Hover card: the last thing a vehicle said */
 .hc-said { display: block; color: #e5e2e1; }
 .hc-why { display: block; color: #8f94a0; font-style: italic; }
+
+/* Drop severity */
+.drop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.drop-sev { display: inline-flex; gap: 2px; }
+.drop-sev button { background: none; border: 1px solid var(--panel-border); border-radius: 4px; padding: 0 6px; color: var(--panel-muted); font: 500 11px/18px var(--mono); cursor: pointer; }
+.drop-sev button.on { border-color: var(--incident); color: var(--incident); background: rgba(245, 165, 36, 0.12); }

@@ -79,10 +79,10 @@ function choicesFor(role: StuckRole, plan: Plan, state: WorldState): EscalationC
   }));
 }
 
-/** Every vehicle of the role, trusted and free first: what a human can still pull when nobody could bid. */
+/** Every trusted vehicle of the role, free first: what a human can still pull. Untrusted vehicles are never offered. */
 function anyVehicleOf(role: string, state: WorldState): EscalationChoice[] {
   return Object.values(state.vehicles)
-    .filter((v) => v.type === role)
+    .filter((v) => v.type === role && !v.untrusted)
     .sort((a, b) => Number(a.untrusted) - Number(b.untrusted) || Number(a.target_incident !== null) - Number(b.target_incident !== null))
     .map((v) => ({ vehicle: v.id, label: `Send ${v.id}`, backers: [], weight: 0 }));
 }
@@ -127,7 +127,8 @@ function questionFor(callName: string, severity: number | null, role: string, ca
   if (noBids) return `${need} Every ${role} is busy. Which one do you pull?`;
   const only = cards[0];
   if (cards.length === 1 && only.holds) {
-    const held = state.labels[only.holds] ?? only.holds;
+    const label = state.labels[only.holds];
+    const held = label && label !== callName ? label : only.holds; // two judge drops share a label: use the id
     return `${need} Only ${only.vehicle} can go, and it is already assigned to ${held}. Send ${only.vehicle} and leave ${held}?`;
   }
   if (cards.length === 1) return `${need} Only ${only.vehicle} is available, and the vote fell short. Send ${only.vehicle}?`;

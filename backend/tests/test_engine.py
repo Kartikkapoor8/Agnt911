@@ -29,6 +29,27 @@ def one_incident(iid="I1"):
     return world
 
 
+def distrust(world, *vids):
+    """Mark vehicles untrusted, as if the fleet had caught them lying."""
+    for vid in vids:
+        world.vehicles[vid].trust, world.vehicles[vid].untrusted = 0.1, True
+
+
+def deadlock_world(iid="I1"):
+    """A severity 5 call whose only trusted ambulance (A2) already holds another severity 5 call (I5).
+
+    A1 and A3 are untrusted. Since protocol only asks a human on a sev-5 vs sev-5 deadlock, this is how the
+    human-escalation tests get a popup.
+    """
+    world = build_fake_world()
+    call = world.incidents[iid].model_copy(update={"severity": 5})
+    held = world.incidents["I5"].model_copy(update={"severity": 5, "status": "assigned", "assigned": ["A2"]})
+    world.incidents = {iid: call, "I5": held}
+    world.vehicles["A2"].status, world.vehicles["A2"].target_incident = "en_route", "I5"
+    distrust(world, "A1", "A3")
+    return world
+
+
 def records(engine):
     """Read flushed JSONL events from this engine's current run."""
     return [json.loads(line) for line in engine.log.path.read_text().splitlines()]
@@ -282,13 +303,8 @@ def test_service_restarts_after_human_moves_responder_away_and_back(tmp_path):
     async def scenario():
         world = one_incident()
         world.incidents["I1"].location = world.vehicles["A1"].location.model_copy()
-        def split_new_call(system, user, response_model):
-            output = fake_llm(system, user, response_model)
-            payload, task = split_user_message(user)
-            if task.startswith("Round 3") and "incident N1 " in task:
-                output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
-            return output
-        engine = Engine(tmp_path, world=world, llm_fn=split_new_call)
+        distrust(world, "A2", "A3")  # A1 is the only trusted ambulance, so a second sev-5 call deadlocks
+        engine = Engine(tmp_path, world=world, llm_fn=fake_llm)
         try:
             await engine.run_round()
             await engine.step(10)
@@ -558,15 +574,9 @@ def test_tick_and_api_state_remain_responsive_during_real_agent_interface(tmp_pa
 
 
 def test_human_escalation_pauses_ticks_and_explicit_choice_resumes(tmp_path):
-    """A real split vote produces an escalation, which only an explicit human choice clears."""
+    """A sev-5 vs sev-5 deadlock produces an escalation, which only an explicit human choice clears."""
     async def scenario():
-        def split(system, user, response_model):
-            output = fake_llm(system, user, response_model)
-            payload, task = split_user_message(user)
-            if task.startswith("Round 3"):
-                output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
-            return output
-        engine = Engine(tmp_path, world=one_incident(), llm_fn=split)
+        engine = Engine(tmp_path, world=deadlock_world(), llm_fn=fake_llm)
         try:
             await engine.run_round()
             assert engine.escalation is not None
@@ -599,14 +609,10 @@ def test_human_reassignment_replaces_missing_role_on_partially_assigned_call(tmp
     async def scenario():
         world = build_fake_world()
         world.incidents = {iid: world.incidents[iid] for iid in ("I1", "I3")}
+        world.incidents["I3"].severity = 5  # sev-5 vs sev-5 with A2 the only trusted ambulance: a deadlock
         assign(world, {"A2": "I3", "P1": "I3"})
-        def split(system, user, response_model):
-            output = fake_llm(system, user, response_model)
-            payload, task = split_user_message(user)
-            if task.startswith("Round 3"):
-                output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
-            return output
-        engine = Engine(tmp_path, world=world, llm_fn=split)
+        distrust(world, "A1", "A3")
+        engine = Engine(tmp_path, world=world, llm_fn=fake_llm)
         try:
             await engine.run_round()
             assert engine.escalation["plans"][0]["incident"] == "I1"
@@ -615,6 +621,7 @@ def test_human_reassignment_replaces_missing_role_on_partially_assigned_call(tmp
             assert state["incidents"]["I3"]["status"] == "assigned"
             assert state["incidents"]["I3"]["assigned"] == ["P1"]
             assert "I3" in engine._pending
+            engine.world.vehicles["A3"].trust, engine.world.vehicles["A3"].untrusted = 1.0, False  # an ambulance frees up
             await engine.run_round()
             state = await engine.state()
             assert {state["vehicles"][vid]["type"] for vid in state["incidents"]["I3"]["assigned"]} == {"ambulance", "police"}
@@ -652,15 +659,8 @@ def test_seeded_rng_and_unique_claim_ids_reset_by_run(tmp_path):
 
 def test_api_human_resolution_requires_all_roles_for_a_critical_crash(tmp_path):
     """A partial human response is rejected; selecting ambulance and police clears escalation."""
-    def split(system, user, response_model):
-        output = fake_llm(system, user, response_model)
-        payload, task = split_user_message(user)
-        if task.startswith("Round 3"):
-            output.vote.option_index = 0 if payload["you"]["id"] in {"A1", "F1", "P1"} else 1
-        return output
-    world = one_incident("I3")
-    world.incidents["I3"].severity = 5
-    engine = Engine(tmp_path, world=world, llm_fn=split, tick_interval_s=0.01)
+    world = deadlock_world("I3")  # police wins by vote; the ambulance role deadlocks against I5
+    engine = Engine(tmp_path, world=world, llm_fn=fake_llm, tick_interval_s=0.01)
     with TestClient(create_app(engine)) as client:
         deadline = time.monotonic() + 3
         while not client.get("/state").json()["paused"]:

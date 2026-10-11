@@ -43,6 +43,7 @@ export interface DecisionCard {
   votes: StoryVote[];
   assigned: string[];
   kept: string[]; // incumbents that stayed on
+  pulled: { vehicle: string; from: string | null }[]; // units the fleet pulled by rule, not by vote
   fallback: string | null;
   roundReached: number | null;
   escalation: { role: string | null; options: string[]; contested: Record<string, string> } | null;
@@ -172,6 +173,7 @@ function openDecision(incident: string, tick: number): DecisionCard {
     votes: [],
     assigned: [],
     kept: [],
+    pulled: [],
     fallback: null,
     roundReached: null,
     escalation: null,
@@ -311,6 +313,9 @@ export function pushStory(e: TypedEvent): void {
         status: d.baseline ? "dispatched" : "agreed",
         assigned: strs(d.assigned),
         kept: Object.values(record(d.kept)),
+        pulled: Array.isArray(d.pulled)
+          ? (d.pulled as { vehicle?: unknown; from?: unknown }[]).map((p) => ({ vehicle: String(p.vehicle), from: str(p.from) }))
+          : [],
         fallback: str(d.fallback),
         roundReached: num(d.round_reached),
       });
@@ -416,8 +421,12 @@ export function decisionSentence(card: DecisionCard, vehicles: Record<string, Ve
     case "dispatched":
       return `Dispatcher sent ${card.assigned.length ? units(card.assigned) : "nobody"}. No vote, no checks.`;
     case "agreed": {
-      const chosen = card.assigned.filter((id) => !card.kept.includes(id));
+      const pulledIds = card.pulled.map((p) => p.vehicle);
+      const chosen = card.assigned.filter((id) => !card.kept.includes(id) && !pulledIds.includes(id));
       const parts: string[] = [];
+      for (const p of card.pulled) {
+        parts.push(p.from ? `Nobody free, so the fleet pulled ${unit(card, p.vehicle, vehicles)} from ${p.from}.` : `${unit(card, p.vehicle, vehicles)} sent while free.`);
+      }
       if (chosen.length) {
         const split = voteSplit(card, chosen, vehicles);
         parts.push(`${units(chosen)} chosen${split ? ` by vote ${split}` : ""}.`);

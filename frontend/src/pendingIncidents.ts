@@ -7,7 +7,7 @@ import { distanceM } from "./escalation";
 import { toast } from "./toast";
 import type { Incident, IncidentType, Location } from "./types";
 
-export const DROP_SEVERITY = 4;
+export const DROP_SEVERITY = 4; // default; the judge panel can pick 3, 4 or 5
 const MATCH_M = 25; // a new incident of the same type this close to the drop point is the confirmation
 const GIVE_UP_MS = 15000; // accepted but never showed up in /state
 
@@ -28,12 +28,12 @@ export function usePendingIncidents(incidents: Record<string, Incident>) {
   const [pending, setPending] = useState<PendingIncident[]>([]);
   const known = useRef(new Set(Object.keys(incidents))); // incidents that existed before each drop
 
-  const drop = useCallback(async (type: IncidentType, location: Location) => {
+  const drop = useCallback(async (type: IncidentType, location: Location, severity: number = DROP_SEVERITY) => {
     const label = `${type[0].toUpperCase()}${type.slice(1)} call dropped by the judge`;
-    const p: PendingIncident = { key: `drop-${++seq}`, type, severity: DROP_SEVERITY, location, label, sentAt: Date.now(), accepted: false };
+    const p: PendingIncident = { key: `drop-${++seq}`, type, severity, location, label, sentAt: Date.now(), accepted: false };
     setPending((list) => [...list, p]);
     try {
-      await postIncident({ type, severity: DROP_SEVERITY, location, label });
+      await postIncident({ type, severity, location, label });
       setPending((list) => list.map((x) => (x.key === p.key ? { ...x, accepted: true } : x)));
     } catch (err) {
       setPending((list) => list.filter((x) => x.key !== p.key));

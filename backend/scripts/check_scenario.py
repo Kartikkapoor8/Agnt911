@@ -6,10 +6,12 @@ Runs the scenario through the engine to --until (default 160) with the fake LLM,
     unresolved incident (the one it will falsely claim) has a police car on scene and is over 300 m away;
   - each closer_than_you_are hijack hits a vehicle a police car can see, with a matching unresolved
     incident far enough away that a 30 s ETA is impossible;
-  - wherever two severity 5 calls arrive at the same tick, escalated_to_human fires that tick.
-Escalations are auto-resolved by scripts/_demo.py so the run reaches --until.
+  - the scripted run never asks the human (the fleet pulls units itself; only sev-5 vs sev-5 escalates);
+  - the judge beat from scenarios/README.md works: at --judge-tick (default 145) two severity 5 medical
+    calls are dropped 5 ticks apart; exactly one escalated_to_human fires, its options are trusted only,
+    and after the human answers (scripts/_demo.py auto_resolve) no second popup comes before --until.
 Prints the nearest-witness distance per vehicle per decision tick. Exit code 1 on any failure.
-Usage, from backend/:  .venv/bin/python scripts/check_scenario.py [--until 160] [--scenario path]
+Usage, from backend/:  .venv/bin/python scripts/check_scenario.py [--until 180] [--judge-tick 145] [--scenario path]
 """
 
 import argparse
@@ -23,7 +25,7 @@ from agnt911.engine.world import DEFAULT_SCENARIO, load_scenario
 from agnt911.fake_llm import fake_llm
 from agnt911.feed import FAKE_ETA_S, preset_kind
 from agnt911.geo import haversine_m
-from agnt911.models import World
+from agnt911.models import Incident, World
 from _demo import auto_resolve
 
 WITNESS_M = 500.0
@@ -39,13 +41,27 @@ def nearest_witness(world: World) -> dict[str, tuple[float, str]]:
     return out
 
 
-async def simulate(scenario: dict, until: int) -> tuple[dict[int, World], list[int], list]:
+JUDGE_CALLS = [  # the judge beat: two cardiac-level calls 600 m apart, 5 ticks apart
+    (0, {"id": "J1", "type": "medical", "severity": 5, "location": {"lat": 37.33115, "lng": -121.88979},
+         "label": "Judge drop: cardiac arrest, Market & San Salvador"}),
+    (5, {"id": "J2", "type": "medical", "severity": 5, "location": {"lat": 37.33115, "lng": -121.88302},
+         "label": "Judge drop: overdose, 4th & San Salvador"}),
+]
+
+
+async def simulate(scenario: dict, until: int, judge_tick: int | None) -> tuple[dict[int, World], list[int], list]:
     """Step the scenario with the fake LLM; return the world at every tick, the ticks where a round committed,
-    and the escalated_to_human events (each escalation is auto-resolved so the run continues)."""
+    and the escalated_to_human events (each escalation is auto-resolved so the run continues).
+    At judge_tick (and 5 ticks later) the judge beat's calls are dropped through engine.add_incident."""
     engine = Engine(log_dir=Path(tempfile.mkdtemp()), scenario=scenario, llm_fn=fake_llm)
     worlds, decisions = {0: engine.world.model_copy(deep=True)}, []
     try:
         while engine.world.tick < until:
+            for offset, call in JUDGE_CALLS:
+                if judge_tick is not None and engine.world.tick == judge_tick + offset and call["id"] not in engine.world.incidents:
+                    data = dict(call)
+                    await engine.add_incident({**Incident.model_validate({k: v for k, v in data.items() if k != "label"}).model_dump(),
+                                               "label": data["label"]})
             before = engine.decision
             await engine.run_round()
             if engine.decision != before and engine.last_round_status == "completed":
@@ -100,11 +116,13 @@ def check_hijack(event: dict, preset: dict, world: World) -> list[str]:
 def main() -> None:
     """Simulate, assert the geometry, and print the witness table."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--until", type=int, default=160)
+    parser.add_argument("--until", type=int, default=180)
+    parser.add_argument("--judge-tick", type=int, default=145, help="drop the judge beat here; -1 to skip")
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
     args = parser.parse_args()
     scenario = load_scenario(args.scenario)
-    worlds, decisions, escalations = asyncio.run(simulate(scenario, args.until))
+    judge_tick = None if args.judge_tick < 0 or args.judge_tick >= args.until else args.judge_tick
+    worlds, decisions, escalations = asyncio.run(simulate(scenario, args.until, judge_tick))
     scripted = sorted({e["tick"] for e in scenario["events"] if e["tick"] <= args.until})
     presets = {p["id"]: p["preset"] for p in scenario.get("presets", [])}
     failures = []
@@ -115,16 +133,21 @@ def main() -> None:
             preset = presets[event["preset_id"]] if "preset_id" in event else {"kind": "raw"}
             failures += [f"t{event['tick']} hijack: {p}" for p in check_hijack(event, preset, worlds[event["tick"]])]
 
-    # The escalation beat: two or more severity 5 calls arriving at the same tick must reach the human.
-    beats = sorted({e["tick"] for e in scenario["events"] if e["type"] == "incident" and e["incident"]["severity"] == 5
-                    and sum(x["type"] == "incident" and x["tick"] == e["tick"] and x["incident"]["severity"] == 5
-                            for x in scenario["events"]) >= 2 and e["tick"] <= args.until})
+    # The fleet decides: no popup in the scripted run; the judge beat pops up exactly once.
     print("\nEscalations to the human:")
     for e in escalations:
         print(f"  t{e.tick} {e.incident}: options {e.data['options']}, contested {e.data.get('contested') or {}}")
-    for t in beats:
-        if not any(e.tick == t for e in escalations):
-            failures.append(f"t{t}: two severity 5 calls arrived but escalated_to_human did not fire")
+    scripted_pops = [e for e in escalations if judge_tick is None or e.tick < judge_tick]
+    if scripted_pops:
+        failures.append(f"the scripted run asked the human {len(scripted_pops)} time(s); it should never")
+    if judge_tick is not None:
+        beat = [e for e in escalations if e.tick >= judge_tick]
+        if len(beat) != 1:
+            failures.append(f"judge beat at t{judge_tick}: expected exactly one escalation, got {len(beat)}")
+        for e in beat:
+            untrusted = [v for v in e.data["options"] if worlds[e.tick].vehicles[v].untrusted]
+            if untrusted:
+                failures.append(f"t{e.tick} {e.incident}: offered untrusted {untrusted}")
 
     vids = sorted(worlds[0].vehicles)
     print(f"\nNearest witness (m) per vehicle; * = decision tick, s = scripted tick, ! = over {WITNESS_M:.0f} m")
