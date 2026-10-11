@@ -18,6 +18,10 @@ interface Props {
   onRestart: () => Promise<void>; // a fresh Protected run, so the map beside the card is never standing still
 }
 
+const WORDS = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve"];
+/** "Seven", from the live fleet size (digits past twelve). */
+const count = (n: number) => WORDS[n] ?? String(n);
+
 // The order the chips always take: ambulances, fire engines, police cars.
 const TYPE_ORDER: Record<VehicleType, number> = { ambulance: 0, fire: 1, police: 2 };
 
@@ -59,7 +63,7 @@ export function Landing({ state, leaving, starting, onStart, onRestart }: Props)
       <section className="landing-left">
         <h1 className="landing-wordmark">Agnt<span>911</span></h1>
         <p className="landing-tagline">Emergency vehicles that dispatch themselves.</p>
-        <p className="landing-desc">Seven vehicle agents negotiate every 911 call. No dispatcher, no boss agent. Any of them can be hacked.</p>
+        <p className="landing-desc">{count(fleet.length)} vehicle agents negotiate every 911 call. No dispatcher, no boss agent. Any of them can be hacked.</p>
 
         <span className="landing-label">Fleet</span>
         <ul className="landing-chips" aria-label="Fleet">
