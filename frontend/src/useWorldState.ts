@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { newEvents, onEvent, onRunChange } from "./dispatch";
+import { rememberRun } from "./runs";
 import type { TypedEvent, WorldState } from "./types";
 
 const POLL_MS = 500;
@@ -31,6 +32,7 @@ export function useWorldState(): WorldStateResult {
       const fresh = newEvents(seen.current.events, body.events ?? []);
       seen.current.events = body.events ?? [];
       fresh.forEach((e) => onEvent(e, { runId: body.run_id, backfill: first }));
+      rememberRun(body.run_id, body.compromised ?? []);
     }
 
     async function poll() {

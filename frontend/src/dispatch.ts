@@ -1,8 +1,8 @@
 // Every typed event from /state.events goes through onEvent exactly once, in stream order.
 // useWorldState finds the events that are new since the last poll and calls onEvent for each;
-// the feed gets every one, and animation handlers (map markers, fleet chips) get the live ones.
+// the story feed gets every one, and animation handlers (map markers, fleet chips) get the live ones.
 
-import { pushFeed, resetFeed } from "./feed";
+import { pushStory, resetStory } from "./story";
 import type { TypedEvent } from "./types";
 
 export interface EventMeta {
@@ -20,15 +20,15 @@ export function onLiveEvent(fn: Listener): () => void {
   return () => animators.delete(fn);
 }
 
-/** The single event dispatcher: feed line first, then any animations. */
+/** The single event dispatcher: story first, then any animations. */
 export function onEvent(event: TypedEvent, meta: EventMeta): void {
-  pushFeed(event);
+  pushStory(event);
   if (!meta.backfill) animators.forEach((fn) => fn(event, meta));
 }
 
 /** A new run started (first connect or POST /mode): drop everything keyed to the old one. */
 export function onRunChange(runId: string): void {
-  resetFeed(runId);
+  resetStory(runId);
 }
 
 const OVERLAP = 4; // how many trailing events must match to place the previous window inside the new one

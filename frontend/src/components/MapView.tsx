@@ -3,13 +3,16 @@ import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { onLiveEvent } from "../dispatch";
 import { glyphSvg, INCIDENT_DRAG_TYPE } from "../glyphs";
+import { advanceTrip, startTrip, updateTrip, type Trip } from "../motion";
+import type { PendingIncident } from "../pendingIncidents";
+import { cachedRoute, getRoute, makePath, pointAt, prefetchScenario, remaining, type LngLat } from "../routes";
 import type { Incident, IncidentType, Location, TypedEvent, Vehicle } from "../types";
 
 const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 const STYLE = "mapbox://styles/mapbox/dark-v11";
 const DOWNTOWN_SAN_JOSE: [number, number] = [-121.8811, 37.3352]; // lng, lat
 const GLIDE_MS = 500; // one poll interval, so a marker arrives just as the next position lands
-const LINES = "assignment-lines"; // GeoJSON source and layer: a thin line from each assigned vehicle to its call
+const LINES = "assignment-lines"; // GeoJSON source and layer: the road still ahead of each vehicle on its way to a call
 const INCIDENT_TYPES: IncidentType[] = ["medical", "fire", "crash", "hazard", "shooting"];
 const FLASH_MS = 1800; // longest one-shot marker animation in styles.css
 const SCENE_LIFT_PX = 26; // on-scene vehicles sit this far above their call's pin...
@@ -18,14 +21,10 @@ const SCENE_SPACING_PX = 28; // ...side by side
 interface Tracked {
   marker: mapboxgl.Marker;
   el: HTMLDivElement; // inner element: Mapbox owns the outer one's transform, so classes and animations go here
-  from: [number, number];
+  from: [number, number]; // glide, for vehicles not on a trip
   to: [number, number];
   start: number;
-}
-
-interface Pair {
-  vehicle: string;
-  incident: [number, number];
+  trip: Trip | null; // on its way to a call: drawn along the road (motion.ts)
   untrusted: boolean;
 }
 
@@ -100,9 +99,13 @@ interface Props {
   renderPopover?: (target: MapTarget) => ReactNode; // hover card content
   onDropIncident?: (type: IncidentType, at: Location) => void; // an incident icon was dropped on the map
   fitPadding?: number | mapboxgl.PaddingOptions; // keep framed points clear of floating panels
+  tick: number; // backend tick, to pace vehicles between polls
+  negotiating?: boolean; // a round holds the backend clock: dim the map, keep vehicles creeping along
+  pendingIncidents?: PendingIncident[]; // dropped calls not yet confirmed by a poll
+  placing?: IncidentType | null; // click-to-place: the next map click drops this type
 }
 
-/** Show the Mapbox map with a moving marker per vehicle, a pin per incident, and a line from each assigned vehicle to its call. */
+/** Show the Mapbox map with a marker per vehicle (driven along real roads), a pin per incident, and the route still ahead of each vehicle. */
 export function MapView({
   vehicles,
   incidents,
@@ -115,6 +118,10 @@ export function MapView({
   renderPopover,
   onDropIncident,
   fitPadding = 80,
+  tick,
+  negotiating = false,
+  pendingIncidents = [],
+  placing = null,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -125,7 +132,14 @@ export function MapView({
   onSelect.current = onSelectVehicle; // marker click handlers are created once, so read the latest callback
   const incidentsNow = useRef(incidents);
   incidentsNow.current = incidents;
-  const pairs = useRef<Pair[]>([]);
+  const pendingMarkers = useRef(new Map<string, mapboxgl.Marker>());
+  const clock = useRef({ tick: -1, at: 0, tps: 1 }); // last tick seen, when (ms), and ticks per second while running
+  const negotiatingNow = useRef(negotiating);
+  negotiatingNow.current = negotiating;
+  const placingNow = useRef(placing);
+  placingNow.current = placing;
+  const onDropNow = useRef(onDropIncident);
+  onDropNow.current = onDropIncident;
   const linesReady = useRef(false);
   const linesDirty = useRef(true);
   const pending = useRef(new Map<string, string[]>()); // animations for markers that don't exist yet
@@ -141,6 +155,13 @@ export function MapView({
     const m = new mapboxgl.Map({ container: container.current, style: STYLE, center: DOWNTOWN_SAN_JOSE, zoom: 13.3 });
     m.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
     map.current = m;
+    if (import.meta.env.DEV) (window as unknown as { __agnt911Map?: mapboxgl.Map }).__agnt911Map = m; // for the Playwright checks
+    prefetchScenario();
+    // Click-to-place, for trackpads where dragging is awkward: an armed icon drops where the map is clicked.
+    m.on("click", (e) => {
+      const type = placingNow.current;
+      if (type) onDropNow.current?.(type, { lat: e.lngLat.lat, lng: e.lngLat.lng });
+    });
     m.on("load", () => {
       m.addSource(LINES, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
       m.addLayer({
@@ -158,25 +179,35 @@ export function MapView({
       linesDirty.current = true;
     });
 
+    let last = performance.now();
     let frame = requestAnimationFrame(function animate(now) {
+      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+      last = now;
+      const c = clock.current;
+      const frozen = negotiatingNow.current || now - c.at > 2500 / c.tps; // a round is holding the backend clock
       let moving = false;
       for (const t of vehicleMarkers.current.values()) {
+        if (t.trip) {
+          advanceTrip(t.trip, dt, c.tps, frozen);
+          t.marker.setLngLat(pointAt(t.trip.path, t.trip.pShown).at);
+          moving = true;
+          continue;
+        }
         const k = Math.min(1, (now - t.start) / GLIDE_MS);
         if (k < 1) moving = true;
         t.marker.setLngLat([t.from[0] + (t.to[0] - t.from[0]) * k, t.from[1] + (t.to[1] - t.from[1]) * k]);
       }
       if (linesReady.current && (moving || linesDirty.current)) {
         linesDirty.current = false;
-        const features = pairs.current.flatMap((p) => {
-          const t = vehicleMarkers.current.get(p.vehicle);
-          if (!t) return [];
-          const at = t.marker.getLngLat();
-          return [{
-            type: "Feature" as const,
-            properties: { untrusted: p.untrusted },
-            geometry: { type: "LineString" as const, coordinates: [[at.lng, at.lat], p.incident] },
-          }];
-        });
+        const features = [...vehicleMarkers.current].flatMap(([id, t]) =>
+          t.trip
+            ? [{
+                type: "Feature" as const,
+                properties: { untrusted: t.untrusted, vehicle: id, road: t.trip.path.road },
+                geometry: { type: "LineString" as const, coordinates: remaining(t.trip.path, t.trip.pShown) },
+              }]
+            : [],
+        );
         (m.getSource(LINES) as mapboxgl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
       }
       const h = hoverNow.current;
@@ -200,6 +231,7 @@ export function MapView({
       cancelAnimationFrame(frame);
       vehicleMarkers.current.clear();
       incidentMarkers.current.clear();
+      pendingMarkers.current.clear();
       m.remove();
       map.current = null;
       centered.current = false;
@@ -243,11 +275,19 @@ export function MapView({
     }
   }, [vehicles, incidents, center]); // fitPadding is read once, on the first frame
 
-  // Sync vehicle markers with the latest poll: new target, start a fresh glide from where it is now.
+  // Sync vehicle markers with the latest poll. A vehicle on its way to a call follows its trip along the road;
+  // anything else glides to the backend position.
   useEffect(() => {
     const m = map.current;
     if (!m) return;
     const now = performance.now();
+    const c = clock.current;
+    if (tick !== c.tick) {
+      const gap = (now - c.at) / 1000;
+      if (c.tick >= 0 && tick > c.tick && gap > 0 && gap < 3) c.tps = 0.7 * c.tps + 0.3 * ((tick - c.tick) / gap);
+      c.tick = tick;
+      c.at = now;
+    }
     const tracked = vehicleMarkers.current;
     // Vehicles on scene sit on their call's pin: lift them into a row above it so neither hides the other.
     const onScene = new Map<string, string[]>();
@@ -273,15 +313,44 @@ export function MapView({
         wrap.addEventListener("mouseenter", () => setHover({ kind: "vehicle", id: v.id }));
         wrap.addEventListener("mouseleave", () => setHover((h) => (h?.kind === "vehicle" && h.id === v.id ? null : h)));
         const marker = new mapboxgl.Marker({ element: wrap }).setLngLat(to).addTo(m);
-        t = { marker, el, from: to, to, start: now };
+        t = { marker, el, from: to, to, start: now, trip: null, untrusted: v.untrusted };
         tracked.set(v.id, t);
         runPending(`vehicle:${v.id}`, el);
+      }
+      const call = v.target_incident ? incidents[v.target_incident] : undefined;
+      if (v.status === "en_route" && call) {
+        // New assignment: one Directions request for this (where it is drawn, call) pair, straight line until it lands.
+        let trip = t.trip;
+        if (!trip || trip.incident !== call.id) {
+          const shown = t.marker.getLngLat();
+          const origin: LngLat = [shown.lng, shown.lat];
+          const dest: LngLat = [call.location.lng, call.location.lat];
+          const started = startTrip(call.id, dest, origin, v.location, tick, cachedRoute(origin, dest));
+          const owner = t;
+          owner.trip = trip = started;
+          if (!started.path.road) {
+            void getRoute(origin, dest).then((road) => {
+              if (road && owner.trip === started) started.path = makePath(origin, dest, road);
+            });
+          }
+        }
+        updateTrip(trip, v.location, tick);
+        t.to = to;
+      } else if (t.trip) {
+        // Arrived, freed, or pulled off: glide from where it is drawn to the backend position.
+        const at = t.marker.getLngLat();
+        t.trip = null;
+        t.from = [at.lng, at.lat];
+        t.to = to;
+        t.start = now;
+        linesDirty.current = true;
       } else if (t.to[0] !== to[0] || t.to[1] !== to[1]) {
         const at = t.marker.getLngLat();
         t.from = [at.lng, at.lat];
         t.to = to;
         t.start = now;
       }
+      t.untrusted = v.untrusted;
       const row = v.status === "on_scene" && v.target_incident ? onScene.get(v.target_incident) ?? [] : [];
       const k = row.indexOf(v.id);
       t.marker.setOffset(k < 0 ? [0, 0] : [Math.round((k - (row.length - 1) / 2) * SCENE_SPACING_PX), -SCENE_LIFT_PX]);
@@ -299,24 +368,33 @@ export function MapView({
         tracked.delete(id);
       }
     }
-  }, [vehicles, selectedId, compromised]);
+  }, [vehicles, incidents, tick, selectedId, compromised]);
 
-  // One line per (vehicle, open call) it is assigned to or heading for. Positions follow the gliding marker.
+  // Dropped calls waiting for the backend: a dashed "pending" pin until a poll brings the real one.
   useEffect(() => {
-    const seen = new Set<string>();
-    const next: Pair[] = [];
-    const add = (vid: string, iid: string) => {
-      const v = vehicles[vid];
-      const inc = incidents[iid];
-      if (!v || !inc || inc.status === "resolved" || seen.has(`${vid}>${iid}`)) return;
-      seen.add(`${vid}>${iid}`);
-      next.push({ vehicle: vid, incident: [inc.location.lng, inc.location.lat], untrusted: v.untrusted });
-    };
-    Object.values(incidents).forEach((inc) => inc.assigned.forEach((vid) => add(vid, inc.id)));
-    Object.values(vehicles).forEach((v) => v.target_incident && add(v.id, v.target_incident));
-    pairs.current = next;
-    linesDirty.current = true;
-  }, [vehicles, incidents]);
+    const m = map.current;
+    if (!m) return;
+    const pins = pendingMarkers.current;
+    const keep = new Set(pendingIncidents.map((p) => p.key));
+    for (const p of pendingIncidents) {
+      if (pins.has(p.key)) continue;
+      const wrapper = document.createElement("div");
+      wrapper.className = "incident-wrap";
+      const el = wrapper.appendChild(document.createElement("div"));
+      el.className = `incident-pin pending type-${p.type} sev-${p.severity}`;
+      el.dataset.pending = p.key;
+      el.innerHTML = `<span class="ip-ring"></span><span class="ip-sev"></span><span class="ip-label"><b>new</b><span></span></span>`;
+      (el.querySelector(".ip-sev") as HTMLElement).textContent = String(p.severity);
+      (el.querySelector(".ip-label span") as HTMLElement).textContent = `${p.label} · sending…`;
+      pins.set(p.key, new mapboxgl.Marker({ element: wrapper }).setLngLat([p.location.lng, p.location.lat]).addTo(m));
+    }
+    for (const [key, marker] of pins) {
+      if (!keep.has(key)) {
+        marker.remove();
+        pins.delete(key);
+      }
+    }
+  }, [pendingIncidents]);
 
   // Sync incident pins: position, severity number, label, and status.
   useEffect(() => {
@@ -404,8 +482,9 @@ export function MapView({
   }
   const content = hover && renderPopover ? renderPopover(hover) : null;
   return (
-    <div className="map-wrap" onDragOver={onDragOver} onDrop={onDrop}>
+    <div className={`map-wrap${negotiating ? " negotiating" : ""}${placing ? " placing" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
       <div ref={container} className="map" />
+      <div className="map-dim" aria-hidden />
       {content && (
         <div ref={popover} className="map-popover" style={{ visibility: "hidden" }}>
           <div className="map-popover-body">{content}</div>

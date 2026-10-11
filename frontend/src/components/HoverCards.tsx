@@ -1,14 +1,12 @@
+import { distanceM, formatDistance } from "../escalation";
 import { Glyph } from "../glyphs";
-import type { CheckEvent, Claim, WorldState } from "../types";
+import type { CheckEvent, Message, Vehicle, WorldState } from "../types";
 
 const STATUS: Record<string, string> = { free: "free", en_route: "en route", on_scene: "on scene" };
 
-/** The vehicle's newest claim in the signed transcript. */
-function lastClaim(state: WorldState, id: string): Claim | null {
-  for (let i = state.recent_messages.length - 1; i >= 0; i--) {
-    const m = state.recent_messages[i];
-    if (m.kind === "claim" && m.vehicle === id) return m;
-  }
+/** The vehicle's newest message of any kind (claim, bid, or vote). */
+function lastMessage(state: WorldState, id: string): Message | null {
+  for (let i = state.recent_messages.length - 1; i >= 0; i--) if (state.recent_messages[i].vehicle === id) return state.recent_messages[i];
   return null;
 }
 
@@ -19,7 +17,39 @@ function lastCheck(state: WorldState, id: string): CheckEvent | null {
   return null;
 }
 
-/** Trust as a 0-1 bar plus the number. */
+/** What the vehicle is doing, as a sentence. */
+function doing(v: Vehicle, state: WorldState): string {
+  const call = v.target_incident ? state.incidents[v.target_incident] : undefined;
+  const name = v.target_incident ? `${v.target_incident}${state.labels[v.target_incident] ? ` (${state.labels[v.target_incident]})` : ""}` : "";
+  let text = "Free, waiting for a call";
+  if (v.status === "en_route" && call) text = `Driving to ${name}, ${formatDistance(distanceM(v.location, call.location))} away`;
+  else if (v.status === "on_scene" && call) text = `On scene at ${name}`;
+  else if (v.target_incident) text = `Assigned to ${name}`;
+  return v.untrusted ? `${text}. Its votes don't count.` : `${text}.`;
+}
+
+/** The vehicle's last message in plain words, plus its own reasoning when that adds something. */
+function said(m: Message, state: WorldState): { words: string; why: string | null } {
+  if (m.kind === "bid") return { words: `I can reach ${m.incident} in ${m.eta_seconds} s.`, why: null };
+  if (m.kind === "vote") {
+    const ballot = (state.plans[m.incident]?.options ?? []).filter((v) => !m.role || state.vehicles[v]?.type === m.role);
+    const choice = ballot[m.option_index];
+    return { words: choice ? `I vote ${choice} for ${m.incident}.` : `I voted on ${m.incident}.`, why: null };
+  }
+  const at = m.incident ?? "the call";
+  const words: Record<string, string> = {
+    on_scene: `I'm on scene at ${at}.`,
+    en_route: `I'm on my way to ${at}.`,
+    resolved: `${at} is handled.`,
+    sector_clear: "My sector is clear.",
+    available: "I'm free.",
+    capability: `I can handle ${at}.`,
+  };
+  const w = words[m.type];
+  return w ? { words: w, why: m.reasoning || null } : { words: m.reasoning || `Reporting on ${at}.`, why: null };
+}
+
+/** Trust as a 0-1 bar. Red only when the fleet has stopped trusting the vehicle. */
 export function TrustBar({ value, untrusted }: { value: number; untrusted: boolean }) {
   const pct = Math.max(0, Math.min(1, value)) * 100;
   const level = untrusted ? "bad" : value < 0.75 ? "warn" : "good";
@@ -30,14 +60,14 @@ export function TrustBar({ value, untrusted }: { value: number; untrusted: boole
   );
 }
 
-/** Hover card for a vehicle: id, type, status, trust, assignment, last claim, last check result. */
-export function VehicleCard({ state, id }: { state: WorldState; id: string }) {
+/** Hover card for a vehicle: id, type, status, trust, what it's doing, and the last thing it said. The map's popover adds the last check. */
+export function VehicleCard({ state, id, showCheck = false }: { state: WorldState; id: string; showCheck?: boolean }) {
   const v = state.vehicles[id];
   if (!v) return null;
-  const claim = lastClaim(state, id);
-  const check = lastCheck(state, id);
+  const msg = lastMessage(state, id);
+  const s = msg ? said(msg, state) : null;
+  const check = showCheck ? lastCheck(state, id) : null;
   const hacked = state.compromised.includes(id);
-  const target = v.target_incident;
   return (
     <div className={`hover-card vehicle-card type-${v.type}${v.untrusted ? " untrusted" : ""}`}>
       <div className="hc-head">
@@ -55,34 +85,37 @@ export function VehicleCard({ state, id }: { state: WorldState; id: string }) {
           <span className="mono">{v.trust.toFixed(2)}</span>
           {v.untrusted && <span className="hc-bad">untrusted</span>}
         </dd>
-        <dt>Assigned</dt>
-        <dd>{target ? <><b className="mono">{target}</b> {state.labels[target] ?? ""}</> : "none"}</dd>
-        <dt>Last claim</dt>
+        <dt>Doing</dt>
+        <dd>{doing(v, state)}</dd>
+        <dt>Last said</dt>
         <dd>
-          {claim ? (
+          {s ? (
             <>
-              <span className="mono">t{claim.tick}</span> {claim.type.replace(/_/g, " ")}
-              {claim.incident ? ` ${claim.incident}` : ""}
-              {claim.reasoning && <span className="hc-quote">“{claim.reasoning}”</span>}
+              <span className="hc-said">“{s.words}”</span>
+              {s.why && s.why !== s.words && <span className="hc-why">{s.why}</span>}
             </>
           ) : (
-            "none yet"
+            "Nothing yet."
           )}
         </dd>
-        <dt>Last check</dt>
-        <dd>
-          {check ? (
-            <>
-              <span className="mono">t{check.tick}</span> {check.checker ?? "no one"} checked its {check.subject}:{" "}
-              <span className={`hc-result result-${check.result}`}>{check.result}</span>
-              {check.trust_after !== check.trust_before && (
-                <span className="mono"> ({check.trust_before.toFixed(2)} → {check.trust_after.toFixed(2)})</span>
+        {showCheck && (
+          <>
+            <dt>Last check</dt>
+            <dd>
+              {check ? (
+                <>
+                  <span className="mono">t{check.tick}</span> {check.checker ?? "no one"} checked its {check.subject}:{" "}
+                  <span className={`hc-result result-${check.result}`}>{check.result}</span>
+                  {check.trust_after !== check.trust_before && (
+                    <span className="mono"> ({check.trust_before.toFixed(2)} → {check.trust_after.toFixed(2)})</span>
+                  )}
+                </>
+              ) : (
+                "none yet"
               )}
-            </>
-          ) : (
-            "none yet"
-          )}
-        </dd>
+            </dd>
+          </>
+        )}
       </dl>
     </div>
   );

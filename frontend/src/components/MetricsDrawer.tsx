@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Mode } from "../api";
+import { compromisedIn } from "../runs";
 import type { Metrics, WorldState } from "../types";
 import { Panel } from "./Panel";
 
@@ -8,65 +9,74 @@ interface Props {
   onSetMode: (mode: Mode) => Promise<void>;
 }
 
-type Row = [label: string, value: (m: Partial<Metrics>) => string];
+interface Column {
+  key: string;
+  title: string;
+  sub: string;
+  metrics: Partial<Metrics>;
+  compromised: string[] | null; // null: this browser didn't see the run, so lies can't be told from mistakes
+  baseline: boolean;
+}
 
-const dash = (x: number | null | undefined, digits = 0) => (typeof x === "number" ? x.toFixed(digits) : "–");
+type Row = [label: string, value: (m: Partial<Metrics>, c: Column) => string, hint?: string];
 
-const ROWS: Row[] = [
-  ["Calls served", (m) => dash(m.incidents_served)],
-  ["Unserved", (m) => dash(m.unserved)],
-  ["Closed with nobody sent", (m) => dash(m.incidents_false_handled)],
-  ["Mean response (ticks)", (m) => dash(m.mean_response_ticks, 1)],
-  ["Claims checked", (m) => dash(m.checks_total)],
-  ["Asked a human", (m) => dash(m.escalations)],
-  [
-    "Liars caught",
-    (m) => {
-      const caught = Object.entries(m.first_untrusted_tick ?? {});
-      return caught.length ? caught.map(([v, t]) => `${v} t${t}`).join(", ") : "none";
-    },
-  ],
-];
+const dash = (x: number | null | undefined) => (typeof x === "number" ? String(x) : "–");
+const flagged = (m: Partial<Metrics>) => Object.keys(m.first_untrusted_tick ?? {});
 
-const MODE_LABEL: Record<Mode, string> = { protected: "Protected", baseline: "Baseline" };
+/** The table rows, worded for someone who doesn't read code. secondsPerTick converts the response time. */
+function rows(secondsPerTick: number): Row[] {
+  return [
+    ["Calls answered", (m) => dash(m.incidents_served)],
+    ["Calls left unanswered", (m) => dash(m.unserved)],
+    ["Calls closed with nobody sent", (m) => dash(m.incidents_false_handled)],
+    ["Avg response (s)", (m) => (typeof m.mean_response_ticks === "number" ? (m.mean_response_ticks * secondsPerTick).toFixed(1) : "–")],
+    ["Lies caught", (m, c) => (c.compromised ? String(flagged(m).filter((v) => c.compromised!.includes(v)).length) : "?"), "Hacked vehicles the fleet stopped trusting"],
+    ["Honest units wrongly flagged", (m, c) => (c.compromised ? String(flagged(m).filter((v) => !c.compromised!.includes(v)).length) : "?"), "Vehicles that were not hacked but lost the fleet's trust"],
+    ["Times it asked a human", (m) => dash(m.escalations)],
+  ];
+}
 
-/** Bottom drawer, collapsed by default: switch protected/baseline (POST /mode restarts the run) and compare runs. */
+const MODE_LABEL: Record<Mode, string> = { protected: "Protected", baseline: "Dumb dispatcher" };
+
+/** Bottom drawer, collapsed by default: this run next to the latest run of the other mode, the baseline switch, and history. */
 export function MetricsDrawer({ state, onSetMode }: Props) {
-  const [pending, setPending] = useState<Mode | null>(null);
+  const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState(false);
 
-  async function choose(mode: Mode) {
-    setPending(mode);
+  async function setBaseline(on: boolean) {
+    setPending(true);
     setError(null);
     try {
-      await onSetMode(mode);
+      await onSetMode(on ? "baseline" : "protected");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPending(null);
+      setPending(false);
     }
   }
 
-  // The current run first, then finished runs newest first (comparison only fills on a mode switch).
-  const columns = [
-    { key: "live", title: `This run · ${MODE_LABEL[state.mode]}`, sub: `t${state.tick}`, metrics: state.metrics },
-    ...[...state.comparison].reverse().map((c) => ({
-      key: c.run_id,
-      title: c.baseline ? "Baseline" : "Protected",
-      sub: c.run_id.slice(0, 6),
-      metrics: c.metrics,
-    })),
-  ];
+  const live: Column = { key: "live", title: `This run · ${MODE_LABEL[state.mode]}`, sub: `t${state.tick}`, metrics: state.metrics, compromised: state.compromised, baseline: state.mode === "baseline" };
+  // comparison only fills on a mode switch, oldest first; the newest run of the other mode is the one to beat.
+  const finished: Column[] = [...state.comparison].reverse().map((c) => ({
+    key: c.run_id,
+    title: c.baseline ? MODE_LABEL.baseline : MODE_LABEL.protected,
+    sub: c.run_id.slice(0, 6),
+    metrics: c.metrics,
+    compromised: compromisedIn(c.run_id),
+    baseline: c.baseline,
+  }));
+  const other = finished.find((c) => c.baseline !== live.baseline);
+  const rest = finished.filter((c) => c !== other);
+  const columns = [live, ...(other ? [other] : []), ...(history ? rest : [])];
+  const secondsPerTick = state.tick > 0 && state.time_s > 0 ? state.time_s / state.tick : 1;
 
   const toggle = (
-    <div className="mode-toggle" title="Switching mode restarts the scenario">
-      {(["protected", "baseline"] as Mode[]).map((m) => (
-        <button key={m} className={state.mode === m ? "active" : ""} disabled={pending !== null || state.mode === m} onClick={() => choose(m)}>
-          {MODE_LABEL[m]}
-          {pending === m ? "…" : ""}
-        </button>
-      ))}
-    </div>
+    <label className={`baseline-switch${pending ? " busy" : ""}`} title="Restarts the scenario with one central dispatcher: no votes, no checks">
+      <input type="checkbox" role="switch" checked={state.mode === "baseline"} disabled={pending} onChange={(e) => setBaseline(e.target.checked)} />
+      <span className="switch-track" aria-hidden><span className="switch-thumb" /></span>
+      Compare: dumb dispatcher
+    </label>
   );
 
   return (
@@ -85,17 +95,25 @@ export function MetricsDrawer({ state, onSetMode }: Props) {
             </tr>
           </thead>
           <tbody>
-            {ROWS.map(([label, value]) => (
+            {rows(secondsPerTick).map(([label, value, hint]) => (
               <tr key={label}>
-                <th scope="row">{label}</th>
+                <th scope="row" title={hint}>{label}</th>
                 {columns.map((c) => (
-                  <td key={c.key} className="mono">{value(c.metrics)}</td>
+                  <td key={c.key} className="mono">{value(c.metrics, c)}</td>
                 ))}
               </tr>
             ))}
           </tbody>
         </table>
-        {state.comparison.length === 0 && <p className="hint">Switch mode to file this run and compare it with the next.</p>}
+        <div className="metrics-foot">
+          {!other && <p className="hint">Flip “Compare: dumb dispatcher” to run the same calls with one central dispatcher, then compare.</p>}
+          {rest.length > 0 && (
+            <button className="history-toggle" aria-expanded={history} onClick={() => setHistory(!history)}>
+              {history ? "Hide history" : `History (${rest.length} more run${rest.length === 1 ? "" : "s"})`}
+            </button>
+          )}
+          {columns.some((c) => !c.compromised) && <p className="hint">? = this browser didn't watch that run, so it can't tell lies from mistakes.</p>}
+        </div>
       </div>
     </Panel>
   );

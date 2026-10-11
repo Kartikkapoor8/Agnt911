@@ -81,7 +81,7 @@ export function HackBox({ selectedId, vehicles, onSelect, presets, onInject }: P
           onChange={(e) => setText(e.target.value)}
           maxLength={2000}
           rows={3}
-          placeholder="Shown to this vehicle as a sensor note"
+          placeholder="e.g. your GPS says you are at the pileup and it is handled"
         />
       )}
       <button className="inject" disabled={!canInject} onClick={injectVehicle}>

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { InjectRequest, Mode } from "../api";
+import { usePendingIncidents } from "../pendingIncidents";
 import type { IncidentType, Location, WorldState } from "../types";
 import { EscalationModal } from "./EscalationModal";
 import { FeedPanel } from "./FeedPanel";
@@ -19,7 +20,6 @@ interface Props {
   onSetMode: (mode: Mode) => Promise<void>;
   onInject: (req: InjectRequest) => Promise<void>;
   onResolve: (assignments: Record<string, string | null>) => Promise<void>;
-  onDropIncident: (type: IncidentType, at: Location) => void;
 }
 
 // Keep framed points clear of the floating panels: feed on the left, judge console on the right.
@@ -29,9 +29,25 @@ const FIT_PADDING = { top: 72, bottom: 72, left: 360, right: 340 };
 export function LivePage(props: Props) {
   const { state, stale, selectedId, onSelect } = props;
   const [highlight, setHighlight] = useState<Highlight | null>(null);
+  const [placing, setPlacing] = useState<IncidentType | null>(null); // click-to-place
+  const { pending, drop } = usePendingIncidents(state.incidents);
+  const negotiating = state.integration.last_round_status === "running";
+
+  const onDropIncident = (type: IncidentType, at: Location) => {
+    setPlacing(null);
+    void drop(type, at);
+  };
+
+  // Esc puts an armed incident icon down.
+  useEffect(() => {
+    if (!placing) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPlacing(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [placing]);
 
   const renderPopover = (t: MapTarget) =>
-    t.kind === "vehicle" ? <VehicleCard state={state} id={t.id} /> : <IncidentCard state={state} id={t.id} />;
+    t.kind === "vehicle" ? <VehicleCard state={state} id={t.id} showCheck /> : <IncidentCard state={state} id={t.id} />;
 
   return (
     <div className="live">
@@ -47,14 +63,25 @@ export function LivePage(props: Props) {
             compromised={state.compromised}
             highlight={highlight}
             renderPopover={renderPopover}
-            onDropIncident={props.onDropIncident}
+            onDropIncident={onDropIncident}
             fitPadding={FIT_PADDING}
+            tick={state.tick}
+            negotiating={negotiating}
+            pendingIncidents={pending}
+            placing={placing}
           />
         </MapErrorBoundary>
       </section>
       <TopBar state={state} stale={stale} />
-      <FeedPanel runId={state.run_id} messages={state.recent_messages} onPick={(t) => setHighlight({ ...t, nonce: Date.now() })} />
-      <JudgePanel state={state} selectedId={selectedId} onSelect={onSelect} onInject={props.onInject} />
+      <FeedPanel
+        runId={state.run_id}
+        messages={state.recent_messages}
+        vehicles={state.vehicles}
+        labels={state.labels}
+        presets={state.presets}
+        onPick={(t) => setHighlight({ ...t, nonce: Date.now() })}
+      />
+      <JudgePanel state={state} selectedId={selectedId} onSelect={onSelect} onInject={props.onInject} placing={placing} onArm={setPlacing} />
       <MetricsDrawer state={state} onSetMode={props.onSetMode} />
       <Toasts />
       <EscalationModal state={state} onResolve={props.onResolve} />

@@ -1,8 +1,6 @@
-// The event feed: one short line per typed event (templates follow docs/events.md), newest first.
-// Lines live in a module store, not in a component, so events that arrive before the feed panel
-// mounts (the landing page, a collapsed panel) are still there when it renders.
+// One short line per typed event (templates follow docs/events.md). The story feed (story.ts) shows these as
+// raw lines for the routine events it hides, when "show all" is on.
 
-import { useSyncExternalStore } from "react";
 import type { EventType, TypedEvent } from "./types";
 
 /** Which family a line belongs to; checks and trust get their own look. */
@@ -23,15 +21,13 @@ export interface FeedLine {
   text: string; // the rest of the line
 }
 
-const MAX_LINES = 1000;
-
 const num = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
 const str = (x: unknown): string | null => (typeof x === "string" && x.length > 0 ? x : null);
 const list = (x: unknown): string[] => (Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : []);
 const words = (s: string) => s.replace(/_/g, " ");
 const trust = (x: unknown) => (num(x) ?? 0).toFixed(2);
 
-const GROUP: Record<EventType, FeedGroup> = {
+export const GROUP: Record<EventType, FeedGroup> = {
   call_received: "call",
   call_escalated: "call",
   bid_placed: "bid",
@@ -125,48 +121,4 @@ export function describeEvent(e: TypedEvent): { who: string; text: string; tone:
       };
   }
   return { who: e.vehicle ?? e.incident ?? "?", tone: "plain", text: words(e.type) };
-}
-
-// ---- store ----
-
-let lines: FeedLine[] = [];
-let runId: string | null = null;
-let seq = 0;
-const listeners = new Set<() => void>();
-const notify = () => listeners.forEach((fn) => fn());
-
-/** Add one event as a line at the top of the feed. Called only by the dispatcher. */
-export function pushFeed(e: TypedEvent): void {
-  const { who, text, tone } = describeEvent(e);
-  const line: FeedLine = {
-    key: `${runId}-${seq++}`,
-    tick: e.tick,
-    type: e.type,
-    group: GROUP[e.type] ?? "plan",
-    tone,
-    who,
-    vehicle: e.vehicle,
-    incident: e.incident,
-    text,
-  };
-  lines = [line, ...lines].slice(0, MAX_LINES);
-  notify();
-}
-
-/** Clear the feed for a new run. */
-export function resetFeed(nextRun: string): void {
-  runId = nextRun;
-  seq = 0;
-  lines = [];
-  notify();
-}
-
-function subscribe(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
-}
-
-/** The feed lines, newest first; re-renders when a line is added or the run resets. */
-export function useFeed(): FeedLine[] {
-  return useSyncExternalStore(subscribe, () => lines);
 }

@@ -66,7 +66,7 @@ export function LandingPage({ state, stale, onStart }: Props) {
 
       <section className="landing-right">
         <MapErrorBoundary>
-          <MapView vehicles={state.vehicles} incidents={state.incidents} center={state.map_center} labels={state.labels} />
+          <MapView vehicles={state.vehicles} incidents={state.incidents} center={state.map_center} labels={state.labels} tick={state.tick} />
         </MapErrorBoundary>
       </section>
     </div>
